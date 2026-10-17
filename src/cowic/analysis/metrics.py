@@ -39,6 +39,7 @@ from cowic.sim.channel_medium import TransmissionRecord
 
 WIFI = "wifi"
 ZIGBEE = "zigbee"
+ZIGBEE_BEACON = "zigbee_beacon"
 MOVED_TOLERANCE_MS = 1e-6  # Delays below this are solver round-off, not moves.
 
 
@@ -139,7 +140,7 @@ def spectrum_utilization(
     _check_non_negative(control_airtime_ms=control_airtime_ms)
     useful = control_airtime_ms
     for record in transmissions:
-        if record.success and record.protocol in (WIFI, ZIGBEE):
+        if record.success and record.protocol in (WIFI, ZIGBEE, ZIGBEE_BEACON):
             start = max(record.start_time_ms, 0.0)
             end = min(record.end_time_ms, horizon_ms)
             useful += max(0.0, end - start)

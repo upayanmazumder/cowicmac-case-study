@@ -68,7 +68,7 @@ PHY constants (2.4 GHz O-QPSK):
 | Backoff slot    | 0.32 ms  |
 | Turnaround      | 0.192 ms |
 | ACK             | 0.352 ms |
-| Max packet      | 4.064 ms |
+| Max packet      | 4.256 ms (266 symbols including SHR and PHR) |
 
 ### 4.2 SuperframeConfig model
 
@@ -80,6 +80,7 @@ Module: `src/cowic/models/superframe.py`
 | `cap_slots`          | $i$                                               |
 | `cfp_slots`          | $j$                                               |
 | `beacon_offset_ms`   | Start offset of the beacon inside the free window |
+| `beacon2_offset_ms`  | Start offset of Beacon2 at the active-period boundary |
 | `beacon_interval_ms` | Superframe period / beacon interval               |
 
 ### 4.3 L-WSA search algorithm
@@ -96,7 +97,7 @@ Objective:
 
 Where:
 
-- $m$ = number of usable CAP slots after fragment filtering
+- $m$ = clear CAP transmission opportunities counted at $t_{\min}$ stride
 - $n$ = number of usable CFP slots after fragment filtering
 - $\eta_{\text{cap}}^{p}$, $\eta_{\text{cfp}}^{p}$ = per-packet efficiency terms
 - $\alpha$ = relative weight for CFP utility
@@ -105,7 +106,7 @@ Search domains:
 
 | Variable              | Domain                                                                               |
 | --------------------- | ------------------------------------------------------------------------------------ |
-| Superframe order $SO$ | $[0, 8]$, $t_{\text{SfSlot}} = 0.96 \cdot 2^{SO}$ ms                                 |
+| Superframe order $SO$ | $[0, 14]$, $t_{\text{SfSlot}} = 0.96 \cdot 2^{SO}$ ms                                |
 | CFP slots $j$         | $[0, 7]$                                                                             |
 | CAP slots $i$         | all $i$ with $i + j \le 15$                                                          |
 | Beacon offset         | free-window start, plus ends of residual WiFi fragments that start inside the window |

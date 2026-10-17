@@ -147,11 +147,37 @@ def test_ctc_transmit_failure_still_restores_maintaining() -> None:
     assert ap.state is APState.MAINTAINING
 
 
+def test_lost_wbeacon_restores_original_wifi_schedule() -> None:
+    ap = APOrchestrator(FakeCTC(delivers=False), FakeScheduler())
+    outcome = ap.process_cycle(FGS, 0.0, 100.0, _zbeacon())
+    assert outcome.wbeacon is not None
+    assert outcome.schedule.decisions == [
+        SchedulingDecision(
+            fg_id=1, scheduled_start_ms=10.0, is_postponed=False, delay_ms=0.0
+        )
+    ]
+
+
+def test_uncoordinated_cycle_skips_ctc_states_and_wbeacon() -> None:
+    ctc = FakeCTC()
+    ap = APOrchestrator(ctc, FakeScheduler())
+    outcome = ap.process_cycle(FGS, 0.0, 100.0, None, coordination_requested=False)
+    assert outcome.wbeacon is None
+    assert ctc.sent == []
+    assert ap.history == [
+        APState.MAINTAINING,
+        APState.RESCHEDULING,
+        APState.TRANSMITTING,
+        APState.MAINTAINING,
+    ]
+
+
 def test_wbeacon_announces_reserved_windows() -> None:
     ctc = FakeCTC(delivers=False)
     ap = APOrchestrator(ctc, FakeScheduler(), d_sensing_ms=10.0, ap_id="AP_7")
     outcome = ap.process_cycle(FGS, 200.0, 300.0, _zbeacon(30.0))
 
+    assert outcome.wbeacon is not None
     assert ctc.sent == [outcome.wbeacon]
     assert not outcome.wbeacon_delivered
     wbeacon = outcome.wbeacon
@@ -167,13 +193,13 @@ def test_wbeacon_announces_reserved_windows() -> None:
     }
 
 
-def test_lost_zbeacon_reuses_last_demand() -> None:
+def test_lost_zbeacon_resets_demand_to_default() -> None:
     scheduler = FakeScheduler()
     ap = APOrchestrator(FakeCTC(), scheduler)
     ap.process_cycle(FGS, 0.0, 100.0, None)
     ap.process_cycle(FGS, 100.0, 200.0, _zbeacon(40.0))
     ap.process_cycle(FGS, 200.0, 300.0, None)
-    assert [call[0] for call in scheduler.calls] == [0.0, 40.0, 40.0]
+    assert [call[0] for call in scheduler.calls] == [0.0, 40.0, 0.0]
 
 
 @pytest.mark.parametrize(
@@ -238,6 +264,7 @@ def test_fallback_window_starts_after_carryover() -> None:
         110.0,
         140.0,
     )
+    assert outcome.wbeacon is not None
     assert outcome.wbeacon.timestamp_ms == 100.0
 
 

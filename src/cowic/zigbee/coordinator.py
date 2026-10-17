@@ -13,7 +13,10 @@ from cowic.ctc.channel import CTCMessage, MessageType
 from cowic.exceptions import ConfigurationError, ProtocolError
 from cowic.models.superframe import SuperframeConfig
 from cowic.wifi.ap_orchestrator import WBEACON_KEYS, ZBEACON_DEMAND_KEY
-from cowic.zigbee.lwsa_adapter import LWSAAdapter
+from cowic.zigbee.lwsa_adapter import (
+    BACKOFF_SLOT_DURATION_MS,
+    LWSAAdapter,
+)
 
 
 class ZCState(Enum):
@@ -45,13 +48,14 @@ class ZigBeeCoordinator:
         self.state = ZCState.IDLE
         self.superframe: SuperframeConfig | None = None
 
-    def generate_demand_report(self, pending_packets: int) -> float:
+    def generate_demand_report(
+        self, pending_packets: int, demand_limit_ms: float | None = None
+    ) -> float:
         """Calculate requested airtime duration based on pending queue.
 
-        Each pending packet is assumed to need the adapter's configured
-        ``desired_packet_duration_ms``; the AP interprets the returned
-        value as ``d_free_ms`` in the next WBeacon/ZBeacon exchange
-        (Section 4.3).
+        Each packet's requested airtime includes two backoff slots and the
+        configured payload duration. ``demand_limit_ms`` caps a synthetic
+        queue sized to fill one experiment's configured free window.
 
         Raises:
             ConfigurationError: if ``pending_packets`` is negative.
@@ -60,14 +64,31 @@ class ZigBeeCoordinator:
             raise ConfigurationError(
                 f"pending_packets must be non-negative, got {pending_packets}"
             )
+        if demand_limit_ms is not None and (
+            not math.isfinite(demand_limit_ms) or demand_limit_ms < 0
+        ):
+            raise ConfigurationError(
+                "demand_limit_ms must be finite and non-negative, "
+                f"got {demand_limit_ms}"
+            )
         self.state = ZCState.CTC_REPORTING
-        demand_ms = pending_packets * self.lwsa.desired_packet_duration_ms
+        packet_interval_ms = (
+            2 * BACKOFF_SLOT_DURATION_MS + self.lwsa.desired_packet_duration_ms
+        )
+        demand_ms = pending_packets * packet_interval_ms
+        if demand_limit_ms is not None:
+            demand_ms = min(demand_ms, demand_limit_ms)
         self.state = ZCState.IDLE
         return demand_ms
 
-    def build_zbeacon(self, pending_packets: int, timestamp_ms: float) -> CTCMessage:
+    def build_zbeacon(
+        self,
+        pending_packets: int,
+        timestamp_ms: float,
+        demand_limit_ms: float | None = None,
+    ) -> CTCMessage:
         """Construct the ZBeacon reporting this cycle's demand (Section 4.2)."""
-        demand_ms = self.generate_demand_report(pending_packets)
+        demand_ms = self.generate_demand_report(pending_packets, demand_limit_ms)
         return CTCMessage(
             msg_type=MessageType.ZBEACON,
             sender_id=self.zc_id,
@@ -116,6 +137,11 @@ class ZigBeeCoordinator:
 
         self.state = ZCState.SUPERFRAME_ACTIVE
         return self.superframe
+
+    def on_wbeacon_lost(self) -> None:
+        """Return to command acquisition after a missed WBeacon timeout."""
+        self.superframe = None
+        self.state = ZCState.COMMAND_ACQUISITION
 
 
 def _read_window(wbeacon: CTCMessage) -> tuple[float, float]:

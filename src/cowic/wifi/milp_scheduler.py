@@ -92,10 +92,9 @@ class MILPScheduler:
             FG's original start time (Eq. 11, term 3).
         mu_base: Base postponement cost scaled by urgency per Eq. 2.
         solver: A configured ``pulp.LpSolver`` instance. Defaults to the
-            CBC solver bundled with PuLP (``PULP_CBC_CMD``); pass a
-            ``pulp.HiGHS_CMD()`` or similar to use a different backend.
+            PuLP HiGHS backend; pass a custom solver to use another backend.
         time_limit_s: Wall-clock solver time limit, forwarded to the
-            default CBC solver. Ignored if a custom ``solver`` is supplied.
+            default HiGHS solver. Ignored if a custom ``solver`` is supplied.
         hard_free_window: If true, no scheduled FG may overlap the free
             window (``sum(z_free) == 0``) and an FG that cannot move clear
             is vacated to the next cycle even if that misses its deadline.
@@ -193,6 +192,9 @@ class MILPScheduler:
             (a.fg_id, b.fg_id): pulp.LpVariable(f"b_{a.fg_id}_{b.fg_id}", cat="Binary")
             for a, b in combinations(frame_groups, 2)
         }
+        # Selects which window comes first when neither overlaps WiFi
+        # (Eq. 3/13): b_ws=0 -> free window ends before sensing starts;
+        # b_ws=1 -> sensing window ends before free starts.
         b_ws = pulp.LpVariable("b_ws", cat="Binary")
 
         t_free_start = pulp.LpVariable(
@@ -216,8 +218,11 @@ class MILPScheduler:
             + pulp.lpSum(mu[fg.fg_id] * p[fg.fg_id] for fg in frame_groups)
         )
 
-        # Window timing constraints (Eq. 13): free and sensing windows must
-        # never overlap each other. b_ws picks which one comes first.
+        # Window timing constraints (Eq. 3/13): the free and sensing
+        # windows must lie within the horizon and remain non-overlapping.
+        # The ZBeacon is transmitted inside the announced sensing window
+        # (Section 3.1), which is a separate reservation from the ZigBee
+        # data window, not a sub-interval carved out of it.
         prob += t_free_end <= t_end_ms
         prob += t_sense_end <= t_end_ms
         prob += t_free_end <= t_sense_start + big_m * (1 - b_ws)
@@ -280,9 +285,7 @@ class MILPScheduler:
             prob += sa + a.duration_ms <= sb + big_m * (1 - b_var + pa + pb)
             prob += sb + b.duration_ms <= sa + big_m * (b_var + pa + pb)
 
-        solver = self.solver or pulp.PULP_CBC_CMD(
-            msg=False, timeLimit=self.time_limit_s
-        )
+        solver = self.solver or pulp.HiGHS(msg=False, timeLimit=self.time_limit_s)
         prob.solve(solver)
         status = pulp.LpStatus[prob.status]
 

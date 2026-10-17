@@ -10,8 +10,9 @@ total transmission efficiency within a granted interference-free window
 The superframe lays out ``1 + i + j`` equal-width ``t_SfSlot`` grid slots
 starting at ``t_offset``: one beacon slot, then ``i`` CAP slots, then ``j``
 CFP slots (Eq. 10). A CAP slot is usable if its first ``t_min`` (the minimum
-CSMA/CA transmission interval, Eq. 8) is clear of WiFi; a CFP slot (a fixed
-GTS allocation) must be clear for its *entire* ``t_SfSlot`` width (Eq. 9).
+CAP transmission opportunities are counted at ``t_min`` stride across the
+CAP region; each opportunity must be clear of WiFi. A CFP slot (a fixed GTS
+allocation) must be clear for its *entire* ``t_SfSlot`` width (Eq. 9).
 
 Although the joint search space is a Mixed-Integer Nonlinear Program, it is
 tightly bounded by IEEE 802.15.4's standard-defined parameter space
@@ -32,6 +33,7 @@ real IEEE 802.15.4 node would behave. This mirrors the base paper's own
 ``m``/``n`` *counting* model (Eq. 9) rather than a per-slot exclusion list.
 """
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -44,11 +46,12 @@ BASE_SLOT_DURATION_MS = SYMBOL_DURATION_MS * 60  # aBaseSlotDuration: 60 symbols
 BACKOFF_SLOT_DURATION_MS = SYMBOL_DURATION_MS * 20  # aUnitBackoffPeriod: 20 symbols
 TURNAROUND_TIME_MS = SYMBOL_DURATION_MS * 12  # aTurnaroundTime: 12 symbols
 ACK_DURATION_MS = SYMBOL_DURATION_MS * 22  # ACK frame: 22 symbols
-MAX_PACKET_DURATION_MS = SYMBOL_DURATION_MS * 254  # aMaxPHYPacketSize: 127 B
+MAX_PACKET_DURATION_MS = SYMBOL_DURATION_MS * 2 * (127 + 6)  # PSDU + SHR + PHR
+PHY_HEADER_DURATION_MS = SYMBOL_DURATION_MS * 2 * 6  # SHR (5 B) + PHR (1 B)
 
 MAX_CFP_SLOTS = 7  # 0 <= j <= 7 (Eq. 10)
 MAX_ACTIVE_SLOTS = 15  # i + j <= 15 (Eq. 10)
-MAX_SUPERFRAME_ORDER = 8  # t_SfSlot search ceiling; covers up to ~4 s slots.
+MAX_SUPERFRAME_ORDER = 14  # IEEE 802.15.4 permits SO in [0, 14].
 
 
 @dataclass(frozen=True)
@@ -85,9 +88,8 @@ def _min_cap_interval_ms(packet_duration_ms: float) -> float:
 
 
 def _per_packet_efficiency(packet_duration_ms: float, interval_ms: float) -> float:
-    """``eta^p`` (Eq. 7): ratio of effective payload time to interval time."""
-    overhead_ms = TURNAROUND_TIME_MS + ACK_DURATION_MS
-    return max(0.0, packet_duration_ms - overhead_ms) / interval_ms
+    """Eq. 7 efficiency; subtract PHY headers, not Eq. 8's removed TA/ACK."""
+    return max(0.0, packet_duration_ms - PHY_HEADER_DURATION_MS) / interval_ms
 
 
 def _count_clear_slots(
@@ -114,6 +116,23 @@ def _count_clear_slots(
         ):
             clear += 1
     return clear
+
+
+def _count_cap_transmissions(
+    cap_duration_ms: float,
+    min_interval_ms: float,
+    residual_wifi_fragments: Sequence[tuple[float, float]] = (),
+    cap_start_ms: float = 0.0,
+) -> int:
+    """Count Eq. 9 CAP attempts at ``t_min`` stride across the CAP region."""
+    attempts = math.floor(cap_duration_ms / min_interval_ms + 1e-12)
+    return _count_clear_slots(
+        attempts,
+        cap_start_ms,
+        min_interval_ms,
+        min_interval_ms,
+        residual_wifi_fragments,
+    )
 
 
 class LWSAAdapter:
@@ -194,8 +213,24 @@ class LWSAAdapter:
                     eta_cfp,
                     residual_wifi_fragments,
                 )
+                candidate_span = (
+                    (1 + candidate.cap_slots + candidate.cfp_slots)
+                    * candidate.slot_duration_ms
+                    if candidate is not None
+                    else 0.0
+                )
+                best_span = (
+                    (1 + best.cap_slots + best.cfp_slots) * best.slot_duration_ms
+                    if best is not None
+                    else 0.0
+                )
                 if candidate is not None and (
-                    best is None or candidate.efficiency > best.efficiency
+                    best is None
+                    or candidate.efficiency > best.efficiency
+                    or (
+                        candidate.efficiency == best.efficiency
+                        and candidate_span > best_span
+                    )
                 ):
                     best = candidate
 
@@ -206,6 +241,7 @@ class LWSAAdapter:
                 cfp_slots=0,
                 beacon_offset_ms=dur_start_ms,
                 beacon_interval_ms=window_ms,
+                beacon2_offset_ms=None,
             )
 
         return SuperframeConfig(
@@ -214,6 +250,7 @@ class LWSAAdapter:
             cfp_slots=best.cfp_slots,
             beacon_offset_ms=best.beacon_offset_ms,
             beacon_interval_ms=window_ms,
+            beacon2_offset_ms=best.beacon_offset_ms + best.slot_duration_ms,
         )
 
     def _best_slot_split(
@@ -243,12 +280,11 @@ class LWSAAdapter:
         for j in range(0, min(MAX_CFP_SLOTS, max_active) + 1):
             max_i = min(max_active - j, MAX_ACTIVE_SLOTS - j)
             for i in range(0, max_i + 1):
-                m = _count_clear_slots(
-                    i,
-                    cap_region_start_ms,
-                    slot_duration_ms,
+                m = _count_cap_transmissions(
+                    i * slot_duration_ms,
                     min_cap_interval_ms,
                     residual_wifi_fragments,
+                    cap_region_start_ms,
                 )
                 cfp_region_start_ms = cap_region_start_ms + i * slot_duration_ms
                 n = _count_clear_slots(

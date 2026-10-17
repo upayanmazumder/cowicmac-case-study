@@ -90,7 +90,7 @@ Constraint groups:
 6. **Overlap indicators** — $z_k$ variables mark intersection with free / sensing windows
 7. **Sensing protection** — $\sum_k z_k^{\text{sense}} = 0$
 
-Solver path: PuLP model → CBC (the solver that PuLP includes; HiGHS is optional). Non-optimal / infeasible status maps to a no-solution result. The AP then calls fallback.
+Solver path: PuLP model → HiGHS (`highspy`). Non-optimal / infeasible status maps to a no-solution result. The AP then calls fallback.
 
 Postponed FG reporting convention used across the codebase: report `scheduled_start_ms = t_end_ms` and `delay_ms = max(0, t_end_ms - original_start_ms)`.
 
