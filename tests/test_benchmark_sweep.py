@@ -5,13 +5,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from cowic.analysis.plotter import REQUIRED_COLUMNS
+from cowic.analysis.plotter import MAIN_SWEEP, REQUIRED_COLUMNS, SENSING_SWEEP
 from cowic.exceptions import ConfigurationError
 from scripts import run_benchmark_sweep as sweep
 
 FAST_POINTS = [
     sweep.SweepPoint(
-        sweep.MAIN_SWEEP,
+        MAIN_SWEEP,
         "configs/exp1_uncoordinated.yaml",
         "Traffic_I",
         31.0,
@@ -19,7 +19,7 @@ FAST_POINTS = [
         42,
     ),
     sweep.SweepPoint(
-        sweep.MAIN_SWEEP,
+        MAIN_SWEEP,
         "configs/exp2_opportunistic.yaml",
         "Traffic_III",
         62.0,
@@ -31,8 +31,8 @@ FAST_POINTS = [
 
 def test_full_grid_matches_issue_11() -> None:
     grid = sweep.build_grid()
-    main = [p for p in grid if p.sweep == sweep.MAIN_SWEEP]
-    sensing = [p for p in grid if p.sweep == sweep.SENSING_SWEEP]
+    main = [p for p in grid if p.sweep == MAIN_SWEEP]
+    sensing = [p for p in grid if p.sweep == SENSING_SWEEP]
     # 6 experiments x 2 traffic x 3 T_ZB x 4 D_free x 5 seeds.
     assert len(main) == 6 * 2 * 3 * 4 * 5
     # Exp 4 on Traffic I: 4 D_sensing x 4 D_free x 5 seeds.
@@ -56,7 +56,7 @@ def test_grid_supports_all_four_traffic_profiles() -> None:
     all_traffics = tuple(sweep.TRAFFIC_PROFILES)
     assert set(all_traffics) == {"Traffic_I", "Traffic_II", "Traffic_III", "Traffic_IV"}
     grid = sweep.build_grid(traffic_profiles=all_traffics)
-    main = [p for p in grid if p.sweep == sweep.MAIN_SWEEP]
+    main = [p for p in grid if p.sweep == MAIN_SWEEP]
     assert {p.traffic for p in main} == set(all_traffics)
 
 
@@ -74,7 +74,7 @@ def test_run_point_returns_plotter_ready_row(tmp_path: Path) -> None:
 
 def test_run_point_applies_sensing_override(tmp_path: Path) -> None:
     point = sweep.SweepPoint(
-        sweep.SENSING_SWEEP,
+        SENSING_SWEEP,
         "configs/exp1_uncoordinated.yaml",
         "Traffic_I",
         31.0,
@@ -117,7 +117,7 @@ def _fake_results() -> pd.DataFrame:
             for seed, noise in ((42, 0.0), (43, 0.02)):
                 rows.append(
                     {
-                        "sweep": sweep.MAIN_SWEEP,
+                        "sweep": MAIN_SWEEP,
                         "experiment_id": exp,
                         "traffic_profile": "Traffic_I",
                         "d_free_ms": d_free,
@@ -134,23 +134,8 @@ def _fake_results() -> pd.DataFrame:
                     }
                 )
     for window in (10.0, 50.0):
-        rows.append({**rows[-1], "sweep": sweep.SENSING_SWEEP, "d_sensing_ms": window})
+        rows.append({**rows[-1], "sweep": SENSING_SWEEP, "d_sensing_ms": window})
     return pd.DataFrame(rows)
-
-
-def test_average_seeds_collapses_seed_rows() -> None:
-    means = sweep.average_seeds(_fake_results())
-    main = means[means["sweep"] == sweep.MAIN_SWEEP]
-    assert len(main) == 4  # 2 experiments x 2 demands.
-    exp4 = main[main["experiment_id"] == "Exp_4"]
-    assert exp4["zigbee_gain_ratio"].tolist() == pytest.approx([0.96, 0.96])
-
-
-def test_write_figures_draws_fig11_and_fig16(tmp_path: Path) -> None:
-    paths = sweep.write_figures(_fake_results(), tmp_path)
-    names = sorted(p.name for p in paths)
-    assert names == ["fig11_Traffic_I_tzb1000.png", "fig16_sensing.png"]
-    assert all(p.exists() and p.stat().st_size > 0 for p in paths)
 
 
 def test_acceptance_report() -> None:

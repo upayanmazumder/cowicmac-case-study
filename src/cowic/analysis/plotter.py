@@ -17,6 +17,9 @@ Expected CSV columns: ``experiment_id`` (e.g. ``"Exp_1"``), ``d_free_ms``,
 fields (``zigbee_gain_ratio``, ``wifi_drop_rate``, ``spectrum_utilization``,
 ``wifi_jitter_ms``, ``moved_fg_count``, ``max_fg_delay_ms``). Extra columns
 (e.g. ``traffic_profile``, ``wifi_collision_rate``) are ignored.
+
+:func:`write_figures` draws every figure from a full sweep results table
+(one row per run). ``python -m cowic.analysis`` calls it on a results CSV.
 """
 
 from pathlib import Path
@@ -43,6 +46,20 @@ METRIC_COLUMNS: tuple[tuple[str, str], ...] = (
 
 REQUIRED_COLUMNS: tuple[str, ...] = ("experiment_id",) + tuple(
     col for col, _ in METRIC_COLUMNS
+)
+
+# Values of the ``sweep`` column written by ``scripts/run_benchmark_sweep.py``.
+MAIN_SWEEP = "main"  # D_free sweep per experiment (Figs. 11-14).
+SENSING_SWEEP = "sensing"  # D_sensing sweep for Exp 4 (Fig. 16).
+
+# Columns that identify one scenario; every other numeric column is a result.
+_SCENARIO_KEYS: tuple[str, ...] = (
+    "sweep",
+    "experiment_id",
+    "traffic_profile",
+    "d_free_ms",
+    "d_sensing_ms",
+    "zigbee_period_ms",
 )
 
 
@@ -164,3 +181,81 @@ class ResultPlotter:
         fig.savefig(output_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return output_path
+
+
+def average_seeds(results: pd.DataFrame) -> pd.DataFrame:
+    """Average the metrics over seeds, for one row per scenario.
+
+    Raises:
+        ConfigurationError: If a scenario column (``_SCENARIO_KEYS``) has a
+            missing value: pandas' ``groupby`` silently drops that row
+            instead of erroring, which would average over fewer seeds
+            than the run actually used without any sign of it.
+    """
+    keys = list(_SCENARIO_KEYS)
+    null_keys = [
+        key for key in keys if key in results.columns and results[key].isna().any()
+    ]
+    if null_keys:
+        raise ConfigurationError(
+            f"rows with a missing {sorted(null_keys)} would be silently "
+            f"dropped by averaging"
+        )
+    numeric = [c for c in results.columns if c not in keys and c != "seed"]
+    return results.groupby(keys, as_index=False)[numeric].mean()
+
+
+def write_figures(results: pd.DataFrame, figures_dir: Path) -> list[Path]:
+    """Draw Fig. 11/14 for each traffic profile and T_ZB, and Fig. 16.
+
+    ``results`` holds one row per run, as written by the benchmark sweep.
+    The seed-averaged data behind each figure is saved next to it under
+    ``figures_dir / "data"``.
+
+    Raises:
+        ConfigurationError: If ``results`` lacks a scenario or metric column.
+    """
+    missing = [
+        c for c in (*_SCENARIO_KEYS, *REQUIRED_COLUMNS) if c not in results.columns
+    ]
+    if missing:
+        raise ConfigurationError(f"Results lack columns {sorted(set(missing))}")
+    plotter = ResultPlotter(figures_dir)
+    means = average_seeds(results)
+    data_dir = figures_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+
+    main = means[means["sweep"] == MAIN_SWEEP]
+    for (traffic, period), group in main.groupby(
+        ["traffic_profile", "zigbee_period_ms"]
+    ):
+        fig = "fig11" if traffic == "Traffic_I" else "fig14"
+        name = f"{fig}_{traffic}_tzb{int(period)}"
+        csv_path = data_dir / f"{name}.csv"
+        group.to_csv(csv_path, index=False)
+        paths.append(
+            plotter.plot_d_free_sweep(
+                csv_path,
+                title=f"{traffic}, $T_{{ZB}}$ = {int(period)} ms",
+                filename=name,
+            )
+        )
+
+    sensing = means[means["sweep"] == SENSING_SWEEP].copy()
+    if not sensing.empty:
+        traffics = ", ".join(sorted(sensing["traffic_profile"].unique()))
+        # One line per demand, as Exp 4-1 to Exp 4-4 in Fig. 16.
+        sensing["experiment_id"] = sensing["d_free_ms"].map(
+            lambda d: f"Exp_4 (D_free={d:g} ms)"
+        )
+        csv_path = data_dir / "fig16_sensing.csv"
+        sensing.to_csv(csv_path, index=False)
+        paths.append(
+            plotter.plot_sensing_sensitivity(
+                csv_path,
+                title=f"Exp 4, {traffics}, various $D_{{sensing}}$",
+                filename="fig16_sensing",
+            )
+        )
+    return paths

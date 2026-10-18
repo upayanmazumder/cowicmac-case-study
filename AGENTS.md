@@ -76,7 +76,7 @@ pytest
 
 Run a specific test file with verbose output:
 ```bash
-pytest tests/test_milp_scheduler.py -v
+pytest tests/test_milp_solver.py -v
 ```
 
 Execute tests with code coverage:
@@ -110,12 +110,12 @@ python -m traces.synthetic_generator --profile Traffic_I --output traces/data/tr
 
 Execute a specific coexistence scenario:
 ```bash
-python -m cowic.sim.simulation_engine --config configs/exp4_cowic_full.yaml
+python -m cowic.sim --config configs/exp4_cowic_full.yaml
 ```
 
 Generate evaluation figures:
 ```bash
-python -m cowic.analysis.plotter --results-dir results/ --output-dir figures/
+python -m cowic.analysis --results-csv results/benchmark_results.csv --output-dir figures/
 ```
 
 ## Code Conventions & Common Patterns
@@ -159,7 +159,7 @@ class APState(Enum):
 
 ### Optimization Solvers
 - Encapsulate the MILP formulation inside `src/cowic/wifi/milp_scheduler.py`.
-- Use `pulp` with the HiGHS or CBC solver backend.
+- Use `pulp` with the HiGHS solver backend (`pulp.HiGHS`, provided by `highspy`).
 - Catch solver infeasibility and trigger the whitespace fallback mode:
 ```python
 import pulp
@@ -170,7 +170,7 @@ def solve_schedule(
 ) -> ScheduleResult:
     prob = pulp.LpProblem("WiFi_Rescheduling", pulp.LpMinimize)
     # Define decision variables, objective, and constraints
-    status = prob.solve(pulp.HiGHS_CMD(msg=False))
+    status = prob.solve(pulp.HiGHS(msg=False))
     if status != pulp.LpStatusOptimal:
         return fallback_whitespace_expansion(fgs, d_free)
     return extract_solution(prob, fgs)
@@ -197,7 +197,7 @@ def solve_schedule(
 - **Discrete-Event Simulation:** `simpy` 4.x.
 - **Optimization:** `pulp` with `highspy` (HiGHS) solver.
 - **Data Analysis:** `numpy`, `pandas`, `pyarrow` (parquet format).
-- **Visualization:** `matplotlib`, `seaborn`.
+- **Visualization:** `matplotlib`.
 - **Quality Assurance:** `pytest`, `ruff`, `mypy`.
 - Avoid heavy runtime containers or external databases. Keep simulation workflows file-based.
 

@@ -109,14 +109,23 @@ Objective (Equations 11–17):
 + \sum_{k=1}^{K} \mu_k P_k
 ```
 
+Postponement cost (Eq. 2), larger for FGs close to their deadline:
+
+```math
+\mu_k = \frac{\mu_{\text{base}}}{\max\left(\epsilon,\ e_k - (T_{\text{end}} + d_k)\right)}
+```
+
+The code uses $\mu_{\text{base}} = 100$ and $\epsilon$ = 1 µs.
+
 Constraint groups:
 
+0. Window placement (Eq. 3/13): the free and sensing windows lie inside the cycle and do not overlap; a binary $b_{\text{ws}}$ picks which comes first
 1. Delay definition for $y_k$
 2. Causality with respect to arrival times
 3. Deadline and cycle-end bounds
 4. Feasibility of postponed Frame Groups in the next cycle
 5. Inter-FG non-overlap through Big-M ordering binaries
-6. Overlap indicator constraints for free and sensing windows
+6. Overlap indicator constraints for free and sensing windows (a disjunctive form: Eq. 16, as printed, would force $z_k = 1$ for non-overlapping FGs and contradict constraint 7)
 7. Hard sensing-window protection: $\sum_k z_k^{\text{sense}} = 0$
 
 Solver path: PuLP model solved with HiGHS (`highspy`). A custom solver can be supplied. If status is not optimal, the AP uses whitespace expansion fallback.
