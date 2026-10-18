@@ -84,6 +84,15 @@ def test_sim_cli_rejects_non_positive_duration(
     assert "duration_s" in capsys.readouterr().err
 
 
+def test_sim_cli_reports_non_mapping_yaml(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad_config = tmp_path / "scalar.yaml"
+    bad_config.write_text("42\n")
+    assert sim_cli.main(["--config", str(bad_config)]) == 2
+    assert "YAML mapping" in capsys.readouterr().err
+
+
 def test_analysis_cli_redraws_figures_from_csv(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -101,7 +110,12 @@ def test_analysis_cli_redraws_figures_from_csv(
 
 @pytest.mark.parametrize(
     ("content", "code"),
-    [(None, 2), ("", 2), ("experiment_id\nExp_1\n", 2)],
+    [
+        (None, 2),
+        ("", 2),
+        ("experiment_id\nExp_1\n", 2),
+        ("a,b,c\n1,2\n3,4,5,6\n", 2),  # Extra field: pandas raises ParserError.
+    ],
 )
 def test_analysis_cli_reports_bad_csv(
     tmp_path: Path, content: str | None, code: int

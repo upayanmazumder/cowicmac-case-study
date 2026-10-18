@@ -184,8 +184,23 @@ class ResultPlotter:
 
 
 def average_seeds(results: pd.DataFrame) -> pd.DataFrame:
-    """Average the metrics over seeds, for one row per scenario."""
+    """Average the metrics over seeds, for one row per scenario.
+
+    Raises:
+        ConfigurationError: If a scenario column (``_SCENARIO_KEYS``) has a
+            missing value: pandas' ``groupby`` silently drops that row
+            instead of erroring, which would average over fewer seeds
+            than the run actually used without any sign of it.
+    """
     keys = list(_SCENARIO_KEYS)
+    null_keys = [
+        key for key in keys if key in results.columns and results[key].isna().any()
+    ]
+    if null_keys:
+        raise ConfigurationError(
+            f"rows with a missing {sorted(null_keys)} would be silently "
+            f"dropped by averaging"
+        )
     numeric = [c for c in results.columns if c not in keys and c != "seed"]
     return results.groupby(keys, as_index=False)[numeric].mean()
 

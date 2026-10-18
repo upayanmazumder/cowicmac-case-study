@@ -50,7 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         results = pd.read_csv(args.results_csv)
         paths = write_figures(results, args.output_dir)
-    except (CoWiCError, pd.errors.EmptyDataError) as exc:
+    except (CoWiCError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         print(f"error: {args.results_csv}: {exc}", file=sys.stderr)
         return 2
     if not paths:

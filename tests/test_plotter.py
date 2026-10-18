@@ -232,3 +232,23 @@ def test_write_figures_draws_fig11_and_fig16(tmp_path: Path) -> None:
 def test_write_figures_rejects_rows_without_scenario_columns(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="traffic_profile"):
         write_figures(sweep_results().drop(columns=["traffic_profile"]), tmp_path)
+
+
+def test_average_seeds_rejects_missing_scenario_value() -> None:
+    """A null in a scenario column (e.g. ``traffic_profile``) must not be
+    silently dropped by ``groupby``: that would average over fewer seeds
+    than the run actually used with no sign of it (one seed's figure/CSV
+    would quietly come from less data than another's)."""
+    results = sweep_results()
+    results.loc[results.index[0], "traffic_profile"] = None
+    with pytest.raises(ConfigurationError, match="traffic_profile"):
+        average_seeds(results)
+
+
+def test_write_figures_rejects_rows_with_missing_scenario_value(
+    tmp_path: Path,
+) -> None:
+    results = sweep_results()
+    results.loc[results.index[0], "d_free_ms"] = None
+    with pytest.raises(ConfigurationError, match="d_free_ms"):
+        write_figures(results, tmp_path)

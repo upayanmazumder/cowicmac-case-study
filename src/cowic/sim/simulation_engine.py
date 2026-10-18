@@ -144,6 +144,11 @@ class SimulationConfig:
         """
         with open(config_path) as handle:
             raw = yaml.safe_load(handle)
+        if not isinstance(raw, dict):
+            raise ConfigurationError(
+                f"{config_path}: expected a YAML mapping at the top level, "
+                f"got {type(raw).__name__}"
+            )
         missing = [
             key
             for key in (
