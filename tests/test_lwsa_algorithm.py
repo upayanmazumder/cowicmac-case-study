@@ -4,7 +4,12 @@ import pytest
 
 from cowic.zigbee.lwsa_adapter import (
     BASE_SLOT_DURATION_MS,
+    MAX_ACTIVE_SLOTS,
+    MAX_CFP_SLOTS,
+    MAX_PACKET_DURATION_MS,
+    MAX_SUPERFRAME_ORDER,
     LWSAAdapter,
+    _count_cap_transmissions,
     _count_clear_slots,
     _min_cap_interval_ms,
     _packet_duration_ms,
@@ -45,6 +50,12 @@ def test_adapt_superframe_fits_within_granted_whitespace() -> None:
             1 + config.cap_slots + config.cfp_slots
         ) * config.slot_duration_ms
         assert total_active_ms <= window_ms + 1e-9
+
+
+def test_equal_efficiency_prefers_larger_active_window() -> None:
+    config = LWSAAdapter().adapt_superframe(0.0, 123.0, [])
+    active_span_ms = (1 + config.cap_slots + config.cfp_slots) * config.slot_duration_ms
+    assert active_span_ms >= 123.0 - config.slot_duration_ms
 
 
 def test_adapt_superframe_too_short_for_beacon_returns_empty() -> None:
@@ -145,6 +156,11 @@ def test_packet_duration_capped_by_slot_and_hardware() -> None:
     assert pk >= 0.0
 
 
+def test_ieee_packet_and_superframe_limits() -> None:
+    assert MAX_PACKET_DURATION_MS == pytest.approx(4.256)
+    assert MAX_SUPERFRAME_ORDER == 14
+
+
 def test_min_cap_interval_includes_two_backoff_slots() -> None:
     """t_min (Eq. 8) is 2 backoff slots plus the packet duration."""
     pk = 2.0
@@ -156,6 +172,12 @@ def test_per_packet_efficiency_is_bounded() -> None:
     """eta^p (Eq. 7) stays within [0, 1] for realistic inputs."""
     eta = _per_packet_efficiency(packet_duration_ms=2.0, interval_ms=2.64)
     assert 0.0 <= eta <= 1.0
+
+
+def test_minimum_slot_packet_efficiency_is_positive() -> None:
+    packet_duration_ms = _packet_duration_ms(BASE_SLOT_DURATION_MS, 2.0)
+    interval_ms = _min_cap_interval_ms(packet_duration_ms)
+    assert _per_packet_efficiency(packet_duration_ms, interval_ms) > 0
 
 
 def test_count_clear_slots_excludes_overlapping_fragment() -> None:
@@ -174,6 +196,58 @@ def test_count_clear_slots_ignores_fragment_outside_occupancy_width() -> None:
     # Grid slot width 4ms, but only the first 2ms (t_min) is checked.
     clear = _count_clear_slots(1, 0.0, 4.0, 2.0, [(3.0, 3.5)])
     assert clear == 1
+
+
+def test_count_cap_transmissions_uses_t_min_stride() -> None:
+    assert _count_cap_transmissions(3.84 * 8, 2.64, []) == 11
+
+
+def test_adapter_matches_full_grid_objective() -> None:
+    adapter = LWSAAdapter()
+    window_ms = 62.0
+    selected = adapter.adapt_superframe(0.0, window_ms, [])
+    selected_packet_ms = _packet_duration_ms(
+        selected.slot_duration_ms, adapter.desired_packet_duration_ms
+    )
+    selected_t_min_ms = _min_cap_interval_ms(selected_packet_ms)
+    selected_score = _count_cap_transmissions(
+        selected.cap_slots * selected.slot_duration_ms, selected_t_min_ms
+    ) * selected_t_min_ms * _per_packet_efficiency(
+        selected_packet_ms, selected_t_min_ms
+    ) + adapter.alpha * _count_clear_slots(
+        selected.cfp_slots,
+        selected.beacon_offset_ms
+        + (1 + selected.cap_slots) * selected.slot_duration_ms,
+        selected.slot_duration_ms,
+        selected.slot_duration_ms,
+        [],
+    ) * selected.slot_duration_ms * _per_packet_efficiency(
+        selected_packet_ms, selected.slot_duration_ms
+    )
+    grid_scores = []
+    for slot_ms in adapter._slot_duration_candidates(window_ms):
+        packet_ms = _packet_duration_ms(slot_ms, adapter.desired_packet_duration_ms)
+        if packet_ms <= 0:
+            continue
+        t_min_ms = _min_cap_interval_ms(packet_ms)
+        eta_cap = _per_packet_efficiency(packet_ms, t_min_ms)
+        eta_cfp = _per_packet_efficiency(packet_ms, slot_ms)
+        for cfp_slots in range(MAX_CFP_SLOTS + 1):
+            for cap_slots in range(MAX_ACTIVE_SLOTS - cfp_slots + 1):
+                if (1 + cap_slots + cfp_slots) * slot_ms > window_ms:
+                    continue
+                cap_count = _count_cap_transmissions(cap_slots * slot_ms, t_min_ms)
+                grid_scores.append(
+                    cap_count * t_min_ms * eta_cap
+                    + adapter.alpha * cfp_slots * slot_ms * eta_cfp
+                )
+    assert selected_score == pytest.approx(max(grid_scores))
+
+
+def test_demand_report_caps_synthetic_queue_at_grant() -> None:
+    from cowic.zigbee.coordinator import ZigBeeCoordinator
+
+    assert ZigBeeCoordinator().generate_demand_report(12, 31.0) == 31.0
 
 
 def test_zc_demand_report_scales_with_pending_packets() -> None:
@@ -230,6 +304,14 @@ def test_zc_process_wbeacon_adapts_superframe() -> None:
     assert zc.state is ZCState.SUPERFRAME_ACTIVE
     assert zc.superframe is config
     assert config.cap_slots + config.cfp_slots > 0
+
+
+def test_zc_returns_to_command_acquisition_after_wbeacon_loss() -> None:
+    from cowic.zigbee.coordinator import ZCState, ZigBeeCoordinator
+
+    zc = ZigBeeCoordinator()
+    zc.on_wbeacon_lost()
+    assert zc.state is ZCState.COMMAND_ACQUISITION
 
 
 def test_zc_process_wbeacon_zero_window_yields_empty_superframe() -> None:

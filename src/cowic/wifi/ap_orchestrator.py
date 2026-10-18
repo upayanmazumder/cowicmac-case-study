@@ -6,7 +6,8 @@ Each scheduling cycle walks the AP through a fixed sequence of states:
     -> TRANSMITTING -> MAINTAINING
 
 1. CTC_GATHERING: read the ZigBee demand from the ZBeacon. If the ZBeacon
-   was lost, the last known demand is reused.
+    was lost, use the configured default demand instead of stale state.
+    Uncoordinated cycles skip CTC gathering and notification.
 2. RESCHEDULING: ask the scheduler (the MILP) for a schedule. If no scheduler
    is configured, it raises a ``CoWiCError``, or it returns a non-optimal
    status, fall back to whitespace expansion. FGs carried over from earlier
@@ -22,7 +23,7 @@ The scheduler and CTC link are injected, so any object with the matching
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import Protocol
 
@@ -55,12 +56,12 @@ class APState(Enum):
     TRANSMITTING = auto()
 
 
-_NEXT_STATE: dict[APState, APState] = {
-    APState.MAINTAINING: APState.CTC_GATHERING,
-    APState.CTC_GATHERING: APState.RESCHEDULING,
-    APState.RESCHEDULING: APState.CTC_NOTIFYING,
-    APState.CTC_NOTIFYING: APState.TRANSMITTING,
-    APState.TRANSMITTING: APState.MAINTAINING,
+_NEXT_STATES: dict[APState, frozenset[APState]] = {
+    APState.MAINTAINING: frozenset({APState.CTC_GATHERING, APState.RESCHEDULING}),
+    APState.CTC_GATHERING: frozenset({APState.RESCHEDULING}),
+    APState.RESCHEDULING: frozenset({APState.CTC_NOTIFYING, APState.TRANSMITTING}),
+    APState.CTC_NOTIFYING: frozenset({APState.TRANSMITTING}),
+    APState.TRANSMITTING: frozenset({APState.MAINTAINING}),
 }
 
 
@@ -90,7 +91,7 @@ class CycleOutcome:
     schedule: ScheduleResult
     d_free_ms: float
     used_fallback: bool
-    wbeacon: CTCMessage
+    wbeacon: CTCMessage | None
     wbeacon_delivered: bool
 
 
@@ -104,16 +105,23 @@ class APOrchestrator:
         d_sensing_ms: float = 0.0,
         ap_id: str = "AP_0",
         optimal_statuses: frozenset[str] = OPTIMAL_STATUSES,
+        default_demand_ms: float = 0.0,
     ) -> None:
         if not math.isfinite(d_sensing_ms) or d_sensing_ms < 0:
             raise ConfigurationError(
                 f"d_sensing_ms must be finite and non-negative, got {d_sensing_ms}"
+            )
+        if not math.isfinite(default_demand_ms) or default_demand_ms < 0:
+            raise ConfigurationError(
+                "default_demand_ms must be finite and non-negative, "
+                f"got {default_demand_ms}"
             )
         self.ctc = ctc
         self.scheduler = scheduler
         self.d_sensing_ms = d_sensing_ms
         self.ap_id = ap_id
         self.optimal_statuses = optimal_statuses
+        self.default_demand_ms = default_demand_ms
         self.state = APState.MAINTAINING
         self.history: list[APState] = [APState.MAINTAINING]
         self.demand_ms = 0.0
@@ -125,6 +133,7 @@ class APOrchestrator:
         t_end_ms: float,
         zbeacon: CTCMessage | None,
         carryover: Sequence[FrameGroup] = (),
+        coordination_requested: bool = True,
     ) -> CycleOutcome:
         """Execute one scheduling cycle at the AP.
 
@@ -154,7 +163,12 @@ class APOrchestrator:
             )
         try:
             return self._run_cycle(
-                frame_groups, t_start_ms, t_end_ms, zbeacon, carryover
+                frame_groups,
+                t_start_ms,
+                t_end_ms,
+                zbeacon,
+                carryover,
+                coordination_requested,
             )
         except Exception:
             self.state = APState.MAINTAINING
@@ -168,10 +182,15 @@ class APOrchestrator:
         t_end_ms: float,
         zbeacon: CTCMessage | None,
         carryover: Sequence[FrameGroup],
+        coordination_requested: bool,
     ) -> CycleOutcome:
-        self._advance(APState.CTC_GATHERING)
-        if zbeacon is not None:
-            self.demand_ms = _read_demand(zbeacon)
+        if coordination_requested:
+            self._advance(APState.CTC_GATHERING)
+            self.demand_ms = (
+                _read_demand(zbeacon) if zbeacon is not None else self.default_demand_ms
+            )
+        else:
+            self.demand_ms = self.default_demand_ms
 
         self._advance(APState.RESCHEDULING)
         busy_until = max(
@@ -190,9 +209,16 @@ class APOrchestrator:
                 channel_free_at,
             )
 
-        self._advance(APState.CTC_NOTIFYING)
-        wbeacon = self._wbeacon(schedule, t_start_ms)
-        delivered = self.ctc.transmit(wbeacon)
+        wbeacon: CTCMessage | None = None
+        delivered = False
+        if coordination_requested:
+            self._advance(APState.CTC_NOTIFYING)
+            wbeacon = self._wbeacon(schedule, t_start_ms)
+            delivered = self.ctc.transmit(wbeacon)
+            if not delivered:
+                schedule = _restore_original_schedule(
+                    schedule, frame_groups, busy_until, t_start_ms, t_end_ms
+                )
 
         self._advance(APState.TRANSMITTING)
         outcome = CycleOutcome(
@@ -206,7 +232,7 @@ class APOrchestrator:
         return outcome
 
     def _advance(self, target: APState) -> None:
-        if _NEXT_STATE[self.state] is not target:
+        if target not in _NEXT_STATES[self.state]:
             raise ProtocolError(
                 f"Illegal AP transition {self.state.name} -> {target.name}"
             )
@@ -305,6 +331,56 @@ def _carryover_busy(
         t_sense_end_ms=t_end_ms,
         solver_status=CARRYOVER_BUSY_STATUS,
         solve_time_ms=0.0,
+    )
+
+
+def _restore_original_schedule(
+    schedule: ScheduleResult,
+    frame_groups: Sequence[FrameGroup],
+    busy_until_ms: float,
+    t_start_ms: float,
+    t_end_ms: float,
+) -> ScheduleResult:
+    """Undo coordinated WiFi placements when the WBeacon is not delivered.
+
+    Each FG goes back to its original start, but never earlier than the
+    channel is free: carryover (an FG deferred by an earlier, coordinated
+    cycle) can still be on air until ``busy_until_ms``, and an FG pushed
+    back by it pushes later FGs in turn. An FG may still run past the
+    cycle end, as uncoordinated WiFi does; one pushed to start at or after
+    the cycle end is postponed, as in ``_carryover_busy``.
+    """
+    decisions = []
+    cursor = busy_until_ms
+    for fg in sorted(frame_groups, key=lambda f: f.original_start_ms):
+        start = max(fg.original_start_ms, cursor)
+        if start >= t_end_ms:
+            decisions.append(
+                SchedulingDecision(
+                    fg_id=fg.fg_id,
+                    scheduled_start_ms=t_end_ms,
+                    is_postponed=True,
+                    delay_ms=t_end_ms - fg.original_start_ms,
+                )
+            )
+            continue
+        decisions.append(
+            SchedulingDecision(
+                fg_id=fg.fg_id,
+                scheduled_start_ms=start,
+                is_postponed=False,
+                delay_ms=start - fg.original_start_ms,
+            )
+        )
+        cursor = start + fg.duration_ms
+    return replace(
+        schedule,
+        decisions=decisions,
+        t_free_start_ms=t_start_ms,
+        t_free_end_ms=t_start_ms,
+        t_sense_start_ms=t_end_ms,
+        t_sense_end_ms=t_end_ms,
+        solver_status="ctc_lost",
     )
 
 

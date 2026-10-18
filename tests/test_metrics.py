@@ -116,10 +116,11 @@ def test_spectrum_utilization() -> None:
         _rec("zigbee", 40.0, 44.0),
         _rec("wifi", 50.0, 60.0, success=False),
         _rec("zigbee", 95.0, 110.0),  # Only [95, 100] is inside the horizon.
+        _rec("zigbee_beacon", 70.0, 72.0),
         _rec("ctc", 60.0, 61.0),  # Not a data protocol.
     ]
-    # Useful: 30 + 4 + 5 = 39, plus 10 ms sensing, over 100 ms.
-    assert spectrum_utilization(records, 100.0, 10.0) == pytest.approx(0.49)
+    # Useful: 30 + 4 + 5 + 2 beacon = 41, plus 10 ms sensing, over 100 ms.
+    assert spectrum_utilization(records, 100.0, 10.0) == pytest.approx(0.51)
 
 
 def test_spectrum_utilization_caps_and_validates() -> None:
@@ -137,6 +138,7 @@ def test_calculator_on_channel_medium_ground_truth() -> None:
     medium.register_transmission("w1", "wifi", 10.0, 20.0)  # FG 1
     medium.register_transmission("w2", "wifi", 60.0, 10.0)  # FG 2, moved
     medium.register_transmission("z1", "zigbee", 35.0, 4.0)  # clean
+    medium.register_transmission("zb1", "zigbee_beacon", 30.0, 2.0)
     medium.register_transmission("z2", "zigbee", 65.0, 4.0)  # hits FG 2
 
     metrics = MetricsCalculator().compute(
@@ -149,8 +151,8 @@ def test_calculator_on_channel_medium_ground_truth() -> None:
     )
     assert metrics.zigbee_gain_ratio == pytest.approx(4.0 / 20.0)
     assert metrics.wifi_drop_rate == pytest.approx(5.0 / 55.0)
-    # Successful: FG 1 (20) + z1 (4) + 5 control = 29 of 100.
-    assert metrics.spectrum_utilization == pytest.approx(0.29)
+    # Successful: FG 1 (20) + Beacon1 (2) + z1 (4) + 5 control = 31 of 100.
+    assert metrics.spectrum_utilization == pytest.approx(0.31)
     assert metrics.wifi_collision_rate == pytest.approx(10.0 / 30.0)
     assert metrics.moved_fg_count == 3
     assert metrics.max_fg_delay_ms == 30.0

@@ -10,6 +10,12 @@ from cowic.sim.simulation_engine import (
     SimulationConfig,
     SimulationEngine,
     _pending_packets,
+    _synthesize_zigbee_packets,
+)
+from cowic.zigbee.lwsa_adapter import (
+    LWSAAdapter,
+    _min_cap_interval_ms,
+    _packet_duration_ms,
 )
 from traces.synthetic_generator import generate_trace
 
@@ -94,8 +100,36 @@ def test_simulation_engine_uncoordinated_baseline_harms_zigbee(
         zigbee_adaptation="fixed",
     )
     result = SimulationEngine(config).run()
+    coordinated = SimulationEngine(_exp4_config(short_trace)).run()
     assert result["zigbee_transmissions"] > 0
+    assert coordinated["zigbee_transmissions"] > 0
     assert result["zigbee_success_rate"] < 0.5
+    assert result["zigbee_success_rate"] < coordinated["zigbee_success_rate"]
+
+
+def test_exp3_ecc_reserves_window_without_sensing_window(short_trace: Path) -> None:
+    """ECC is bidirectional but has no sensing window, so no ZBeacon can be
+    sent. The AP must still make its blind D_free reservation (capped by
+    the 40 ms NAV) instead of a zero window every cycle."""
+    config = SimulationConfig(
+        scenario_name="Test_Exp3",
+        duration_s=3.0,
+        wifi_trace_path=short_trace,
+        d_free_ms=62.0,
+        d_sensing_ms=0.0,
+        zigbee_period_ms=1000.0,
+        wifi_scheduling="ecc_nav",
+        ctc_direction="bidirectional",
+        zigbee_adaptation="fixed",
+    )
+    engine = SimulationEngine(config)
+    engine.run()
+    assert engine.last_demand_history == [config.d_free_ms] * 3
+    assert engine.last_medium is not None
+    assert any(
+        record.protocol == "zigbee" and record.success
+        for record in engine.last_medium.transmissions
+    )
 
 
 @pytest.mark.parametrize(
@@ -212,7 +246,12 @@ def test_simulation_engine_exposes_raw_transmission_records(short_trace: Path) -
     assert engine.last_medium is not None
     assert len(engine.last_medium.transmissions) > 0
     total_records = len(engine.last_medium.transmissions)
-    total_summary = int(result["wifi_transmissions"] + result["zigbee_transmissions"])
+    total_summary = int(
+        result["wifi_transmissions"]
+        + result["zigbee_transmissions"]
+        + result["zigbee_beacon_transmissions"]
+        + result["zbeacon_transmissions"]
+    )
     assert total_records == total_summary
 
 
@@ -239,6 +278,31 @@ def test_simulation_engine_falls_back_to_csma_ca_on_total_ctc_loss(
     assert result["wbeacon_lost"] == result["cycles_run"]
     assert result["csma_ca_fallback_cycles"] == result["cycles_run"]
     assert result["zigbee_packets_attempted"] > 0
+
+
+def test_lost_wbeacon_reverts_wifi_and_zc_state(short_trace: Path) -> None:
+    from cowic.zigbee.coordinator import ZCState
+
+    config = SimulationConfig(
+        scenario_name="Test_CTCRevert",
+        duration_s=3.0,
+        wifi_trace_path=short_trace,
+        d_free_ms=31.0,
+        d_sensing_ms=10.0,
+        zigbee_period_ms=1000.0,
+        wifi_scheduling="milp_soft_constraint",
+        ctc_direction="bidirectional",
+        zigbee_adaptation="lwsa",
+        ctc_per=1.0,
+        ctc_max_retries=0,
+    )
+    engine = SimulationEngine(config)
+    result = engine.run()
+
+    assert result["wbeacon_lost"] == result["cycles_run"]
+    assert all(not decision.is_postponed for decision in engine.last_decisions)
+    assert all(decision.delay_ms == 0.0 for decision in engine.last_decisions)
+    assert engine.last_zigbee_state is ZCState.COMMAND_ACQUISITION
 
 
 def test_simulation_engine_applies_ctc_delay_as_simulated_time(
@@ -313,13 +377,13 @@ def test_exp2_fixed_superframe_follows_announced_gap(short_trace: Path) -> None:
     )
     r1, r2 = exp1.run(), exp2.run()
 
-    beacon_slot = 0.96 * 4
+    first_payload_offset = 0.96 * 4 + 2 * 0.32
     exp1_starts = _first_zigbee_start_per_cycle(exp1)
     exp2_starts = _first_zigbee_start_per_cycle(exp2)
     assert exp1_starts
     assert exp2_starts
-    assert all(start == pytest.approx(beacon_slot) for start in exp1_starts)
-    assert any(start > beacon_slot + 1e-6 for start in exp2_starts)
+    assert all(start == pytest.approx(first_payload_offset) for start in exp1_starts)
+    assert any(start > first_payload_offset + 1e-6 for start in exp2_starts)
     assert r2["zigbee_success_count"] > r1["zigbee_success_count"]
 
 
@@ -335,7 +399,34 @@ def test_fixed_superframe_without_wbeacon_stays_at_cycle_start(
     lost.run()
     starts = _first_zigbee_start_per_cycle(lost)
     assert starts
-    assert all(start == pytest.approx(0.96 * 4) for start in starts)
+    assert all(start == pytest.approx(0.96 * 4 + 2 * 0.32) for start in starts)
+
+
+@pytest.mark.parametrize(
+    "wifi_scheduling",
+    ["ecc_nav", "milp_hard_constraint"],
+)
+def test_fixed_superframe_stays_inside_31ms_grant(
+    short_trace: Path, wifi_scheduling: str
+) -> None:
+    from cowic.analysis.metrics import wifi_collision_rate
+
+    config = SimulationConfig(
+        scenario_name=f"Test_Fixed_{wifi_scheduling}",
+        duration_s=3.0,
+        wifi_trace_path=short_trace,
+        d_free_ms=31.0,
+        d_sensing_ms=0.0,
+        zigbee_period_ms=1000.0,
+        wifi_scheduling=wifi_scheduling,
+        ctc_direction="wifi_to_zigbee",
+        zigbee_adaptation="fixed",
+    )
+    engine = SimulationEngine(config)
+    result = engine.run()
+    assert engine.last_medium is not None
+    assert wifi_collision_rate(engine.last_medium.transmissions) == 0.0
+    assert result["zigbee_success_rate"] > 0.99
 
 
 def test_exp6_without_zbeacon_still_serves_zigbee(short_trace: Path) -> None:
@@ -493,12 +584,127 @@ def test_zbeacon_demand_follows_d_free(short_trace: Path) -> None:
     assert delivered[1] > delivered[0]
 
 
+def test_demand_report_matches_d_free_across_ctc_directions(
+    short_trace: Path,
+) -> None:
+    common = SimulationConfig(
+        scenario_name="Test_DemandParity",
+        duration_s=3.0,
+        wifi_trace_path=short_trace,
+        d_free_ms=31.0,
+        d_sensing_ms=10.0,
+        zigbee_period_ms=1000.0,
+        wifi_scheduling="milp_soft_constraint",
+        ctc_direction="bidirectional",
+    )
+    for direction in ("bidirectional", "wifi_to_zigbee"):
+        engine = SimulationEngine(replace(common, ctc_direction=direction))
+        engine.run()
+        expected = [0.0, 31.0, 31.0] if direction == "bidirectional" else [31.0] * 3
+        assert engine.last_demand_history == expected
+
+
+def test_sensing_window_consumes_zigbee_grant_and_contains_zbeacon(
+    short_trace: Path,
+) -> None:
+    from cowic.analysis.metrics import zigbee_gain_ratio
+
+    gains = []
+    for sensing_ms in (10.0, 100.0):
+        config = SimulationConfig(
+            scenario_name=f"Test_Sensing_{sensing_ms:g}",
+            duration_s=3.0,
+            wifi_trace_path=short_trace,
+            d_free_ms=31.0,
+            d_sensing_ms=sensing_ms,
+            zigbee_period_ms=1000.0,
+            wifi_scheduling="milp_soft_constraint",
+            ctc_direction="bidirectional",
+            zigbee_adaptation="lwsa",
+        )
+        engine = SimulationEngine(config)
+        summary = engine.run()
+        assert engine.last_medium is not None
+        gains.append(
+            zigbee_gain_ratio(
+                engine.last_medium.transmissions,
+                31.0 * int(summary["cycles_run"]),
+                horizon_ms=3000.0,
+            )
+        )
+        records = [
+            record
+            for record in engine.last_medium.transmissions
+            if record.protocol == "zbeacon"
+        ]
+        assert len(records) == len(engine.last_zbeacon_windows)
+        assert all(
+            start <= record.start_time_ms and record.end_time_ms <= end
+            for record, (start, end) in zip(
+                records, engine.last_zbeacon_windows, strict=True
+            )
+        )
+    assert gains[1] < gains[0] - 0.05
+
+
 def test_pending_packets_derived_from_d_free_unless_overridden(
     short_trace: Path,
 ) -> None:
     config = _exp4_config(short_trace, 62.0)
-    assert _pending_packets(config, 2.0) == 31
-    assert _pending_packets(replace(config, d_free_ms=61.0), 2.0) == 31
+    assert _pending_packets(config, 2.0) == 24
+    assert _pending_packets(replace(config, d_free_ms=61.0), 2.0) == 24
     assert _pending_packets(replace(config, zigbee_pending_packets=5), 2.0) == 5
     with pytest.raises(ConfigurationError):
         _pending_packets(config, 0.0)
+
+
+def test_zigbee_synthesis_uses_t_min_and_packet_airtime() -> None:
+    config = LWSAAdapter().adapt_superframe(0.0, 62.0, [])
+    packets = _synthesize_zigbee_packets(config, 0, 2.0, pending_packets=100)
+    packet_duration_ms = _packet_duration_ms(config.slot_duration_ms, 2.0)
+    min_interval_ms = _min_cap_interval_ms(packet_duration_ms)
+    cap_packets = [
+        packet for packet in packets if not packet.is_cfp and not packet.is_beacon
+    ]
+    cfp_packets = [packet for packet in packets if packet.is_cfp]
+    beacons = [packet for packet in packets if packet.is_beacon]
+
+    assert len(cap_packets) == int(
+        config.cap_slots * config.slot_duration_ms / min_interval_ms
+    )
+    assert all(
+        packet.duration_ms == pytest.approx(packet_duration_ms)
+        for packet in cfp_packets
+    )
+    assert beacons[0].start_time_ms == config.beacon_offset_ms
+    assert beacons[1].start_time_ms == config.beacon2_offset_ms
+
+    limited = _synthesize_zigbee_packets(config, 1, 2.0, pending_packets=3)
+    assert sum(not packet.is_beacon for packet in limited) == 3
+
+
+def test_beacon2_does_not_overlap_first_cfp_packet_without_cap() -> None:
+    """With cap_slots == 0, Beacon2 and the first GTS packet share a slot
+    start; the packet must follow the beacon instead of colliding with it."""
+    from cowic.models.superframe import SuperframeConfig
+
+    for slot_ms in (0.96, 3.84):
+        config = SuperframeConfig(
+            slot_duration_ms=slot_ms,
+            cap_slots=0,
+            cfp_slots=3,
+            beacon_offset_ms=0.0,
+            beacon_interval_ms=4 * slot_ms,
+            beacon2_offset_ms=slot_ms,
+        )
+        packets = _synthesize_zigbee_packets(config, 0, 2.0)
+        intervals = sorted(
+            (p.start_time_ms, p.start_time_ms + p.duration_ms) for p in packets
+        )
+        for (_, end), (start, _) in zip(intervals, intervals[1:], strict=False):
+            assert end <= start + 1e-9
+        cfp = [p for p in packets if p.is_cfp]
+        assert all(
+            p.start_time_ms + p.duration_ms <= slot_ms * (2 + k) + 1e-9
+            for k, p in enumerate(cfp)
+        )

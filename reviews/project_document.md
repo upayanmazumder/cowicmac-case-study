@@ -38,11 +38,15 @@ flowchart TB
 ### End-to-end coordination cycle
 
 1. The ZC reports demand with a ZBeacon (`d_free_ms`).
-2. The AP solves the MILP and creates a free window plus a sensing window.
+2. The AP solves the MILP and places a free window and a separate sensing window. The two windows do not overlap (Eq. 3).
 3. The AP sends a WBeacon with window bounds.
 4. The ZC runs L-WSA and builds a superframe that fits the free window.
 5. Both sides transmit on the shared medium.
 6. The channel medium records each transmission and marks overlaps as collisions. The metrics module reads these records after the run.
+
+### ZigBee device scope
+
+The current simulator represents ZigBee data traffic as one end device (`node_id=0`) coordinated by one ZC. It does not model five per-device queues, slotted CAP contention between devices, or per-device GTS allocation. The shared-medium collision model still detects overlaps between the simulated WiFi and ZigBee transmissions.
 
 ---
 
@@ -92,7 +96,7 @@ Constraint groups:
 6. Overlap indicator bounds for $z_k^{\text{free}}$ and $z_k^{\text{sense}}$
 7. Sensing window protection: $\sum_{k=1}^{K} z_k^{\text{sense}} = 0$
 
-Solver: PuLP with the CBC solver that PuLP includes. A HiGHS solver can be supplied as an option. If the MILP has no optimal solution, the AP uses whitespace expansion fallback.
+Solver: PuLP with HiGHS (`highspy`). A custom PuLP solver can be supplied; if the MILP has no optimal solution, the AP uses whitespace expansion fallback.
 
 ### 3.3 AP Orchestrator State Machine
 
@@ -151,7 +155,7 @@ IEEE 802.15.4 2.4 GHz O-QPSK PHY constants used in this project:
 | Backoff slot        | 0.32 ms (20 symbols)   |
 | Turnaround time     | 0.192 ms (12 symbols)  |
 | ACK duration        | 0.352 ms (22 symbols)  |
-| Max packet duration | 4.064 ms (254 symbols) |
+| Max packet duration | 4.256 ms (266 symbols: 127-byte PSDU plus 6-byte SHR/PHR) |
 
 ### 4.2 L-WSA Algorithm (Algorithm 2)
 
@@ -167,12 +171,12 @@ Search variables:
 
 | Variable            | Domain                                                                |
 | ------------------- | --------------------------------------------------------------------- |
-| $t_{\text{SfSlot}}$ | `BASE_SLOT * 2^SO`, $SO \in [0, 8]$                                   |
+| $t_{\text{SfSlot}}$ | `BASE_SLOT * 2^SO`, $SO \in [0, 14]$                                  |
 | $j$ (CFP slots)     | $[0, 7]$                                                              |
 | $i$ (CAP slots)     | $i + j \le 15$                                                        |
 | $t_{\text{offset}}$ | Window start, or end of each residual WiFi fragment inside the window |
 
-Filter: $(1 + i + j) \cdot t_{\text{SfSlot}} \le$ free-window duration. Each candidate slot must avoid residual WiFi fragments $\mathcal{T}^{\text{WiFi}}$.
+Filter: $(1 + i + j) \cdot t_{\text{SfSlot}} \le$ free-window duration. Each candidate slot must avoid residual WiFi fragments $\mathcal{T}^{\text{WiFi}}$. CAP attempts are counted at $t_{\min}$ stride.
 
 ### 4.3 ZigBee Coordinator State Machine
 
@@ -268,10 +272,10 @@ Exp 6 also changes CTC from bidirectional to WiFi-to-ZigBee.
 | ------------ | --------------------------- |
 | Language     | Python 3.11+                |
 | DES engine   | SimPy                       |
-| MILP         | PuLP + CBC (`pulp < 3.0.0`) |
+| MILP         | PuLP + HiGHS (`highspy`)    |
 | Data         | NumPy, Pandas, PyYAML       |
 | Plots        | Matplotlib                  |
-| Tests        | pytest (245 tests)          |
+| Tests        | pytest (263 tests)          |
 | Lint / types | ruff, mypy                  |
 
 ---

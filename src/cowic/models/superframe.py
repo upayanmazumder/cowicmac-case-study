@@ -12,6 +12,7 @@ class SuperframeConfig:
     cfp_slots: int
     beacon_offset_ms: float
     beacon_interval_ms: float
+    beacon2_offset_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -24,3 +25,4 @@ class ZigBeePacket:
     duration_ms: float
     payload_bytes: int
     is_cfp: bool
+    is_beacon: bool = False

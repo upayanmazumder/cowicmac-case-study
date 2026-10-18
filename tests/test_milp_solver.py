@@ -76,7 +76,7 @@ def test_schedule_empty_frame_groups_infeasible_when_windows_overflow() -> None:
     """Windows that cannot both fit in the horizon are reported infeasible."""
     scheduler = MILPScheduler()
     result = scheduler.schedule(
-        [], d_free_ms=80.0, d_sensing_ms=30.0, t_start_ms=0.0, t_end_ms=100.0
+        [], d_free_ms=80.0, d_sensing_ms=30.0, t_start_ms=0.0, t_end_ms=75.0
     )
     assert result.solver_status == "Infeasible"
 

@@ -62,8 +62,14 @@ from cowic.wifi.milp_scheduler import (
     MILPScheduler,
     ScheduleResult,
 )
-from cowic.zigbee.coordinator import ZigBeeCoordinator
-from cowic.zigbee.lwsa_adapter import LWSAAdapter
+from cowic.zigbee.coordinator import ZCState, ZigBeeCoordinator
+from cowic.zigbee.lwsa_adapter import (
+    BACKOFF_SLOT_DURATION_MS,
+    SYMBOL_DURATION_MS,
+    LWSAAdapter,
+    _min_cap_interval_ms,
+    _packet_duration_ms,
+)
 from traces.playback import iter_cycles, load_trace
 from traces.synthetic_generator import generate_trace
 
@@ -80,10 +86,8 @@ TRACE_DATA_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent / "traces" / "data"
 )
 
-# No issue in this sprint covers per-packet ZigBee traffic generation, so
-# the ZC reports a constant queue each cycle. By default the queue is sized
-# so the ZBeacon demand equals the experiment's D_free (see
-# _pending_packets); set SimulationConfig.zigbee_pending_packets to override.
+# The synthetic queue is sized to fill D_free and is capped by the configured
+# grant when reporting demand; zigbee_pending_packets can override its depth.
 
 # A legacy, coexistence-unaware ZigBee superframe (`zigbee_adaptation:
 # "fixed"`, Exp 1/2/3/5): a maximal standard CAP+CFP structure, oblivious
@@ -91,6 +95,7 @@ TRACE_DATA_DIR = (
 _FIXED_CAP_SLOTS = 8
 _FIXED_CFP_SLOTS = 7
 _FIXED_SLOT_DURATION_MS = 0.96 * 4  # BASE_SLOT_DURATION_MS * 2**2
+_ZIGBEE_BEACON_DURATION_MS = SYMBOL_DURATION_MS * 30
 
 
 @dataclass(frozen=True)
@@ -259,35 +264,59 @@ def _residual_wifi_fragments(
     return fragments
 
 
-def _fixed_superframe(anchor_ms: float) -> SuperframeConfig:
-    """A legacy, non-adaptive superframe beaconing at ``anchor_ms``."""
+def _fixed_superframe(anchor_ms: float, window_end_ms: float) -> SuperframeConfig:
+    """A legacy structure truncated to the available window.
+
+    Fills the standard 8 CAP + 7 CFP structure (``_FIXED_CAP_SLOTS``,
+    ``_FIXED_CFP_SLOTS``) as far as it fits before ``window_end_ms``; it
+    does not throttle to a queue estimate (see ``_pending_packets``'s
+    docstring: that estimate sizes the *reported* ZBeacon demand, not how
+    much of a granted window gets used).
+    """
+    if window_end_ms <= anchor_ms:
+        return SuperframeConfig(
+            slot_duration_ms=_FIXED_SLOT_DURATION_MS,
+            cap_slots=0,
+            cfp_slots=0,
+            beacon_offset_ms=anchor_ms,
+            beacon_interval_ms=max(0.0, window_end_ms - anchor_ms),
+        )
+    max_data_slots = max(
+        0,
+        math.floor((window_end_ms - anchor_ms) / _FIXED_SLOT_DURATION_MS + 1e-12) - 1,
+    )
+    max_data_slots = min(max_data_slots, _FIXED_CAP_SLOTS + _FIXED_CFP_SLOTS)
+    cap_slots = min(_FIXED_CAP_SLOTS, max_data_slots)
+    cfp_slots = min(_FIXED_CFP_SLOTS, max_data_slots - cap_slots)
+    active_slots = cap_slots + cfp_slots
     return SuperframeConfig(
         slot_duration_ms=_FIXED_SLOT_DURATION_MS,
-        cap_slots=_FIXED_CAP_SLOTS,
-        cfp_slots=_FIXED_CFP_SLOTS,
+        cap_slots=cap_slots,
+        cfp_slots=cfp_slots,
         beacon_offset_ms=anchor_ms,
-        beacon_interval_ms=(1 + _FIXED_CAP_SLOTS + _FIXED_CFP_SLOTS)
-        * _FIXED_SLOT_DURATION_MS,
+        beacon_interval_ms=(1 + active_slots) * _FIXED_SLOT_DURATION_MS,
+        beacon2_offset_ms=anchor_ms + _FIXED_SLOT_DURATION_MS,
     )
 
 
-def _fixed_anchor_ms(
-    config: SimulationConfig, outcome: CycleOutcome, cycle_start_ms: float
-) -> float:
-    """Where a fixed superframe starts this cycle.
+def _fixed_window(
+    config: SimulationConfig,
+    outcome: CycleOutcome,
+    cycle_start_ms: float,
+    cycle_end_ms: float,
+) -> tuple[float, float]:
+    """Return the notified window or a D_free-sized fallback window.
 
     Exp 2/3/5 notify ZigBee of the reserved window over WiFi->ZigBee CTC
-    (Table 4); the ZC keeps its fixed structure but transmits there. With no
-    CTC (Exp 1), a lost WBeacon, or an empty window, ZigBee has nothing to
-    follow and stays at the cycle start. The superframe is not shrunk, so
-    slots running past a short window (e.g. ECC's 40 ms NAV cap) still meet
-    WiFi, which is the cost of not adapting.
+    (Table 4). With no CTC (Exp 1), a lost WBeacon, or an empty window,
+    the legacy superframe starts at the cycle boundary and is sized from
+    the configured D_free demand.
     """
     schedule = outcome.schedule
     notified = config.ctc_direction != "none" and outcome.wbeacon_delivered
     if notified and schedule.t_free_end_ms > schedule.t_free_start_ms:
-        return schedule.t_free_start_ms
-    return cycle_start_ms
+        return schedule.t_free_start_ms, min(schedule.t_free_end_ms, cycle_end_ms)
+    return cycle_start_ms, min(cycle_start_ms + config.d_free_ms, cycle_end_ms)
 
 
 def _pending_packets(config: SimulationConfig, packet_duration_ms: float) -> int:
@@ -303,49 +332,103 @@ def _pending_packets(config: SimulationConfig, packet_duration_ms: float) -> int
         raise ConfigurationError(
             f"packet duration must be positive, got {packet_duration_ms}"
         )
-    return math.ceil(config.d_free_ms / packet_duration_ms)
+    return math.ceil(config.d_free_ms / _min_cap_interval_ms(packet_duration_ms))
 
 
 def _synthesize_zigbee_packets(
-    superframe: SuperframeConfig, cycle_index: int, desired_packet_duration_ms: float
+    superframe: SuperframeConfig,
+    cycle_index: int,
+    desired_packet_duration_ms: float,
+    pending_packets: int | None = None,
 ) -> list[ZigBeePacket]:
-    """One packet attempt per active CAP/CFP slot of ``superframe``.
+    """Synthesize beacon, CAP attempts, and CFP payloads for one superframe.
 
     Whether a packet actually survives is decided downstream by
     :class:`~cowic.sim.channel_medium.ChannelMedium`'s real overlap check
     against registered WiFi transmissions - this only lays out *when* each
     node attempts to transmit.
     """
-    if superframe.cap_slots == 0 and superframe.cfp_slots == 0:
+    if superframe.slot_duration_ms <= 0 or (
+        superframe.cap_slots == 0 and superframe.cfp_slots == 0
+    ):
         return []
     packets: list[ZigBeePacket] = []
+    beacon_duration_ms = min(_ZIGBEE_BEACON_DURATION_MS, superframe.slot_duration_ms)
+    packets.append(
+        ZigBeePacket(
+            packet_id=cycle_index * 1000 + len(packets),
+            node_id=0,
+            start_time_ms=superframe.beacon_offset_ms,
+            duration_ms=beacon_duration_ms,
+            payload_bytes=0,
+            is_cfp=False,
+            is_beacon=True,
+        )
+    )
+    if superframe.beacon2_offset_ms is not None:
+        packets.append(
+            ZigBeePacket(
+                packet_id=cycle_index * 1000 + len(packets),
+                node_id=0,
+                start_time_ms=superframe.beacon2_offset_ms,
+                duration_ms=beacon_duration_ms,
+                payload_bytes=0,
+                is_cfp=False,
+                is_beacon=True,
+            )
+        )
+
+    packet_duration_ms = _packet_duration_ms(
+        superframe.slot_duration_ms, desired_packet_duration_ms
+    )
+    min_interval_ms = _min_cap_interval_ms(packet_duration_ms)
+    remaining_packets = pending_packets if pending_packets is not None else math.inf
     cap_start_ms = superframe.beacon_offset_ms + superframe.slot_duration_ms
-    for i in range(superframe.cap_slots):
-        slot_start_ms = cap_start_ms + i * superframe.slot_duration_ms
-        duration_ms = min(superframe.slot_duration_ms, desired_packet_duration_ms)
+    cap_attempts = math.floor(
+        superframe.cap_slots * superframe.slot_duration_ms / min_interval_ms + 1e-12
+    )
+    for attempt in range(cap_attempts):
+        if remaining_packets <= 0:
+            break
+        slot_start_ms = (
+            cap_start_ms + attempt * min_interval_ms + 2 * BACKOFF_SLOT_DURATION_MS
+        )
         packets.append(
             ZigBeePacket(
                 packet_id=cycle_index * 1000 + len(packets),
                 node_id=0,
                 start_time_ms=slot_start_ms,
-                duration_ms=duration_ms,
+                duration_ms=packet_duration_ms,
                 payload_bytes=32,
                 is_cfp=False,
             )
         )
+        remaining_packets -= 1
     cfp_start_ms = cap_start_ms + superframe.cap_slots * superframe.slot_duration_ms
     for j in range(superframe.cfp_slots):
+        if remaining_packets <= 0:
+            break
         slot_start_ms = cfp_start_ms + j * superframe.slot_duration_ms
+        if (
+            j == 0
+            and superframe.cap_slots == 0
+            and superframe.beacon2_offset_ms is not None
+        ):
+            # With no CAP, Beacon2 opens the first GTS slot. The GTS packet
+            # follows it; t_pk leaves at least t_ta + t_ack (0.544 ms) of
+            # slot free, which covers the 0.48 ms beacon.
+            slot_start_ms += beacon_duration_ms
         packets.append(
             ZigBeePacket(
                 packet_id=cycle_index * 1000 + len(packets),
                 node_id=0,
                 start_time_ms=slot_start_ms,
-                duration_ms=superframe.slot_duration_ms,
+                duration_ms=packet_duration_ms,
                 payload_bytes=32,
                 is_cfp=True,
             )
         )
+        remaining_packets -= 1
     return packets
 
 
@@ -368,10 +451,11 @@ class _RunStats:
         self.cycles_run += 1
         if outcome.used_fallback:
             self.fallback_cycles += 1
-        if outcome.wbeacon_delivered:
-            self.wbeacon_delivered += 1
-        else:
-            self.wbeacon_lost += 1
+        if outcome.wbeacon is not None:
+            if outcome.wbeacon_delivered:
+                self.wbeacon_delivered += 1
+            else:
+                self.wbeacon_lost += 1
 
     def record_decision(self, decision: SchedulingDecision) -> None:
         """Fold one FG's final decision into the FG-level totals.
@@ -401,6 +485,12 @@ class _RunStats:
         )
         total_wifi = wifi_success + wifi_failed
         total_zigbee = zigbee_success + zigbee_failed
+        zigbee_beacons = sum(
+            1 for record in medium.transmissions if record.protocol == "zigbee_beacon"
+        )
+        zbeacons = sum(
+            1 for record in medium.transmissions if record.protocol == "zbeacon"
+        )
         return {
             "simulated_duration_ms": horizon_ms,
             "cycles_run": float(self.cycles_run),
@@ -417,6 +507,8 @@ class _RunStats:
             "wifi_drop_rate": (wifi_failed / total_wifi) if total_wifi else 0.0,
             "zigbee_transmissions": float(total_zigbee),
             "zigbee_success_count": float(zigbee_success),
+            "zigbee_beacon_transmissions": float(zigbee_beacons),
+            "zbeacon_transmissions": float(zbeacons),
             "zigbee_success_rate": (
                 (zigbee_success / total_zigbee) if total_zigbee else 0.0
             ),
@@ -430,6 +522,9 @@ class SimulationEngine:
         """Store ``config``; ``run()`` does all the actual work."""
         self.config = config
         self.last_medium: ChannelMedium | None = None
+        self.last_zigbee_state: ZCState | None = None
+        self.last_zbeacon_windows: list[tuple[float, float]] = []
+        self.last_demand_history: list[float] = []
         # One final WiFi scheduling decision per FG of the last run, with
         # delays from each FG's true original start (for MetricsCalculator):
         # its transmission, its drop, or its postponement if the run ended
@@ -472,18 +567,24 @@ class SimulationEngine:
             scheduler=scheduler,
             d_sensing_ms=config.d_sensing_ms,
             optimal_statuses=optimal_statuses,
+            # Without a ZBeacon channel (Exp 1/2/5/6), or a sensing window
+            # to carry one (Exp 3, ECC: "blind" reservation without ZigBee's
+            # actual demand, Section 1), the AP reserves the configured
+            # D_free. Otherwise it learns the demand from each ZBeacon.
+            default_demand_ms=(
+                config.d_free_ms
+                if config.ctc_direction != "bidirectional" or config.d_sensing_ms == 0.0
+                else 0.0
+            ),
         )
-        if config.ctc_direction != "bidirectional":
-            # No ZBeacon channel (Exp 1/2/5/6), so the AP can't learn ZigBee's
-            # demand over CTC; it uses the experiment's configured D_free.
-            # Otherwise demand stays 0 and the AP grants empty windows.
-            ap.demand_ms = config.d_free_ms
         lwsa = LWSAAdapter()
         zc = ZigBeeCoordinator(lwsa=lwsa)
         stats = _RunStats()
         self._wifi_fg_id_by_trans_id = {}
         self.last_decisions = []
         self.last_frame_groups = fg_by_id
+        self.last_zbeacon_windows = []
+        self.last_demand_history = []
         self._waiting = {}
 
         env = simpy.Environment()
@@ -499,6 +600,7 @@ class SimulationEngine:
         self._waiting = {}
 
         self.last_medium = medium
+        self.last_zigbee_state = zc.state
         return stats.finalize(medium, horizon_ms)
 
     def delivered_wifi_fg_ids(self) -> set[int]:
@@ -541,6 +643,7 @@ class SimulationEngine:
         bidirectional = config.ctc_direction == "bidirectional"
         adaptive = config.zigbee_adaptation == "lwsa"
         pending_packets = _pending_packets(config, zc.lwsa.desired_packet_duration_ms)
+        pending_zbeacon: CTCMessage | None = None
         # FGs postponed by the previous cycle: they were not transmitted and
         # join the next cycle's scheduling input.
         carried: list[FrameGroup] = []
@@ -592,25 +695,21 @@ class SimulationEngine:
                     )
             inputs.extend(cycle.frame_groups)
 
-            zbeacon: CTCMessage | None = None
-            if bidirectional:
-                raw_zbeacon = zc.build_zbeacon(pending_packets, cycle.start_ms)
-                if ctc.transmit(raw_zbeacon):
-                    zbeacon = raw_zbeacon
-                if ctc.delay_ms > 0:
-                    yield env.timeout(ctc.last_attempts * ctc.delay_ms)
-
+            zbeacon = pending_zbeacon
+            pending_zbeacon = None
             outcome = ap.process_cycle(
                 inputs,
                 cycle.start_ms,
                 cycle.end_ms,
                 zbeacon,
                 carryover,
+                coordination_requested=config.ctc_direction != "none",
             )
             if ctc.delay_ms > 0:
                 yield env.timeout(ctc.last_attempts * ctc.delay_ms)
 
             stats.record_cycle(outcome)
+            self.last_demand_history.append(outcome.d_free_ms)
             carried = []
             for decision in outcome.schedule.decisions:
                 fg = fg_by_id[decision.fg_id]
@@ -637,13 +736,28 @@ class SimulationEngine:
                 on_air.append((fg, start))
                 self._finalize(final, stats)
 
-            if adaptive and outcome.wbeacon_delivered:
+            if adaptive and outcome.wbeacon_delivered and outcome.wbeacon is not None:
                 fragments = _residual_wifi_fragments(
                     outcome.schedule,
                     fg_by_id,
                     outcome.schedule.t_free_start_ms,
                     outcome.schedule.t_free_end_ms,
                 )
+                # With Eq. 3/13's windows now disjoint (milp_scheduler.py),
+                # this clamp is empty by construction except at the exact
+                # touching boundary; kept so a future relaxation of that
+                # constraint degrades gracefully instead of silently losing
+                # the sensing-window exclusion.
+                sense_start = max(
+                    outcome.schedule.t_sense_start_ms,
+                    outcome.schedule.t_free_start_ms,
+                )
+                sense_end = min(
+                    outcome.schedule.t_sense_end_ms,
+                    outcome.schedule.t_free_end_ms,
+                )
+                if sense_end > sense_start:
+                    fragments.append((sense_start, sense_end))
                 superframe = zc.process_wbeacon(outcome.wbeacon, fragments)
             else:
                 if adaptive:
@@ -652,22 +766,54 @@ class SimulationEngine:
                     # WiFi-oblivious legacy superframe as "fixed"
                     # adaptation, rather than going dark for the cycle.
                     stats.csma_ca_fallback_cycles += 1
-                superframe = _fixed_superframe(
-                    _fixed_anchor_ms(config, outcome, cycle.start_ms)
+                    zc.on_wbeacon_lost()
+                fixed_start_ms, fixed_end_ms = _fixed_window(
+                    config, outcome, cycle.start_ms, cycle.end_ms
                 )
+                superframe = _fixed_superframe(fixed_start_ms, fixed_end_ms)
 
             for packet in _synthesize_zigbee_packets(
-                superframe, cycle.index, zc.lwsa.desired_packet_duration_ms
+                superframe,
+                cycle.index,
+                zc.lwsa.desired_packet_duration_ms,
             ):
                 if packet.start_time_ms >= horizon_ms:
                     continue
-                stats.zigbee_packets_attempted += 1
+                if not packet.is_beacon:
+                    stats.zigbee_packets_attempted += 1
                 medium.register_transmission(
                     f"zigbee-{cycle.index}-{packet.packet_id}",
-                    "zigbee",
+                    "zigbee_beacon" if packet.is_beacon else "zigbee",
                     packet.start_time_ms,
                     packet.duration_ms,
                 )
+
+            if bidirectional and outcome.wbeacon_delivered:
+                sense_start_ms = outcome.schedule.t_sense_start_ms
+                sense_end_ms = outcome.schedule.t_sense_end_ms
+                beacon_start_ms = max(sense_start_ms, env.now)
+                beacon_duration_ms = min(
+                    _ZIGBEE_BEACON_DURATION_MS, sense_end_ms - beacon_start_ms
+                )
+                if beacon_duration_ms > 0:
+                    if beacon_start_ms > env.now:
+                        yield env.timeout(beacon_start_ms - env.now)
+                    raw_zbeacon = zc.build_zbeacon(
+                        pending_packets,
+                        beacon_start_ms,
+                        demand_limit_ms=config.d_free_ms,
+                    )
+                    medium.register_transmission(
+                        f"zbeacon-{cycle.index}",
+                        "zbeacon",
+                        beacon_start_ms,
+                        beacon_duration_ms,
+                    )
+                    self.last_zbeacon_windows.append((sense_start_ms, sense_end_ms))
+                    if ctc.transmit(raw_zbeacon):
+                        pending_zbeacon = raw_zbeacon
+                    if ctc.delay_ms > 0:
+                        yield env.timeout(ctc.last_attempts * ctc.delay_ms)
 
             if env.now < cycle.end_ms:
                 yield env.timeout(cycle.end_ms - env.now)

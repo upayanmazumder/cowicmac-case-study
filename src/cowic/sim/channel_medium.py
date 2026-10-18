@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 
 from cowic.exceptions import ConfigurationError
 
-# Overlaps up to 1 us are treated as touching. CBC round-off reaches ~1 us
+# Overlaps up to 1 us are treated as touching. MILP solver round-off reaches ~1 us
 # (seen on Traffic I), while one IEEE 802.15.4 symbol lasts 16 us, so no
 # physically meaningful collision is hidden.
 OVERLAP_TOLERANCE_MS = 1e-3

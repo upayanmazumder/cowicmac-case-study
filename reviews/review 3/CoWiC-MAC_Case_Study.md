@@ -24,13 +24,13 @@ Stack:
 | --------------------- | --------------------------- |
 | Language              | Python 3.11+                |
 | Discrete-event engine | SimPy                       |
-| MILP                  | PuLP + CBC (`pulp < 3.0.0`) |
+| MILP                  | PuLP + HiGHS (`highspy`)    |
 | Tests                 | pytest                      |
 | Lint / types          | ruff, mypy                  |
 
 Verification status at document time:
 
-- 245 automated tests passing
+- 263 automated tests passing
 - CI green on Python 3.11 and 3.12
 - Clean `mypy` and `ruff` checks
 
@@ -119,7 +119,7 @@ Constraint groups:
 6. Overlap indicator constraints for free and sensing windows
 7. Hard sensing-window protection: $\sum_k z_k^{\text{sense}} = 0$
 
-Solver path: PuLP model solved with the CBC solver that PuLP includes. A HiGHS solver can be supplied as an option. If status is not optimal, the AP uses whitespace expansion fallback.
+Solver path: PuLP model solved with HiGHS (`highspy`). A custom solver can be supplied. If status is not optimal, the AP uses whitespace expansion fallback.
 
 Postponed FG reporting convention: a postponed FG is reported at `scheduled_start_ms = t_end_ms` with `delay_ms = max(0, t_end_ms - original_start_ms)`.
 
@@ -139,7 +139,7 @@ Search variables and domains:
 
 | Variable            | Domain                                        |
 | ------------------- | --------------------------------------------- |
-| $t_{\text{SfSlot}}$ | $0.96 \cdot 2^{SO}$ ms, $SO \in [0, 8]$       |
+| $t_{\text{SfSlot}}$ | $0.96 \cdot 2^{SO}$ ms, $SO \in [0, 14]$      |
 | $j$                 | $[0, 7]$                                      |
 | $i$                 | $i + j \le 15$                                |
 | $t_{\text{offset}}$ | window start and residual-fragment boundaries |
@@ -159,7 +159,7 @@ IEEE 802.15.4 2.4 GHz O-QPSK constants used:
 | Backoff slot    | 0.32 ms  |
 | Turnaround      | 0.192 ms |
 | ACK             | 0.352 ms |
-| Max packet      | 4.064 ms |
+| Max packet      | 4.256 ms (266 symbols: 127-byte PSDU plus 6-byte SHR/PHR) |
 
 ---
 
@@ -232,6 +232,7 @@ Known limitations of this software-only study:
 2. CTC is an error-rate message model, not waveform CTC
 3. No multi-hop ZigBee routing
 4. No IEEE 802.11be multi-link operation
+5. ZigBee data traffic uses one simulated end device (`node_id=0`); per-device queues, slotted CAP contention, and GTS allocation across five end devices are not modeled.
 
 Useful extensions:
 

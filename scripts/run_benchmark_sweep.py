@@ -174,7 +174,14 @@ def run_point(
         engine.last_frame_groups,
         horizon_ms=horizon_ms,
         zigbee_capacity_ms=zigbee_clean_capacity_ms(config.d_free_ms, cycles),
-        control_airtime_ms=config.d_sensing_ms * cycles,
+        control_airtime_ms=sum(
+            max(
+                0.0,
+                min(record.end_time_ms, horizon_ms) - max(record.start_time_ms, 0.0),
+            )
+            for record in engine.last_medium.transmissions
+            if record.protocol == "zbeacon" and record.success
+        ),
         delivered_fg_ids=engine.delivered_wifi_fg_ids(),
     )
     row: dict[str, float | str] = {
