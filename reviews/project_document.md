@@ -78,8 +78,18 @@ The AP solves this programme each cycle:
 + \sum_{k=1}^{K} \mu_k P_k
 ```
 
+Postponement cost (Eq. 2), larger for FGs close to their deadline:
+
+```math
+\mu_k = \frac{\mu_{\text{base}}}{\max\left(\epsilon,\ e_k - (T_{\text{end}} + d_k)\right)}
+```
+
+The code uses $\mu_{\text{base}} = 100$ and $\epsilon$ = 1 µs.
+
 Decision variables:
 
+- $T_{\text{free}}^{\text{start}}, T_{\text{sensing}}^{\text{start}}$ — window start times
+- $b_{\text{ws}}$ — window-ordering binary: which window comes first
 - $s'_k$ — scheduled start time of FG $k$
 - $y_k$ — delay relative to the original start
 - $z_k^{\text{free}}, z_k^{\text{sense}}$ — overlap indicators with free and sensing windows
@@ -88,12 +98,13 @@ Decision variables:
 
 Constraint groups:
 
+0. Window placement (Eq. 3/13): both windows lie inside the cycle and do not overlap. $T_{\text{free}}^{\text{end}} \le T_{\text{sensing}}^{\text{start}} + M(1 - b_{\text{ws}})$ and $T_{\text{sensing}}^{\text{end}} \le T_{\text{free}}^{\text{start}} + M b_{\text{ws}}$
 1. Delay definition: $y_k \ge s'_k - s_k$, $y_k \ge 0$
 2. Causality: $a_k \le s'_k + M P_k$
 3. Deadline and cycle bound: $s'_k + d_k \le e_k + M P_k$ and $s'_k + d_k \le T_{\text{end}} + M P_k$
 4. Feasibility of postponed FGs: $T_{\text{end}} + d_k \le e_k + M(1 - P_k)$
 5. Inter-FG non-overlap via Big-M ordering binaries $b_{kj}$
-6. Overlap indicator bounds for $z_k^{\text{free}}$ and $z_k^{\text{sense}}$
+6. Overlap indicators $z_k^{\text{free}}$ and $z_k^{\text{sense}}$. Eq. 16, as printed, forces $z_k = 1$ for an FG that does not overlap the window, which contradicts constraint 7. The code uses a disjunctive form instead: if $z_k = 0$, the FG lies entirely before or entirely after the window
 7. Sensing window protection: $\sum_{k=1}^{K} z_k^{\text{sense}} = 0$
 
 Solver: PuLP with HiGHS (`highspy`). A custom PuLP solver can be supplied; if the MILP has no optimal solution, the AP uses whitespace expansion fallback.

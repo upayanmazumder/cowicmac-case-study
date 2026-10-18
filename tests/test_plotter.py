@@ -5,7 +5,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from cowic.analysis.plotter import METRIC_COLUMNS, ResultPlotter
+from cowic.analysis.plotter import (
+    MAIN_SWEEP,
+    METRIC_COLUMNS,
+    SENSING_SWEEP,
+    ResultPlotter,
+    average_seeds,
+    write_figures,
+)
 from cowic.exceptions import ConfigurationError
 
 
@@ -175,3 +182,53 @@ def test_plot_benchmark_rejects_missing_experiment_id(tmp_path: Path) -> None:
     plotter = ResultPlotter(tmp_path / "figures")
     with pytest.raises(ConfigurationError):
         plotter.plot_benchmark(csv_path)
+
+
+def sweep_results() -> pd.DataFrame:
+    """Rows as written by the benchmark sweep: two seeds per scenario."""
+    rows = []
+    for exp, gz in (("Exp_1", 0.05), ("Exp_4", 0.95)):
+        for d_free in (31.0, 62.0):
+            for seed, noise in ((42, 0.0), (43, 0.02)):
+                rows.append(
+                    {
+                        "sweep": MAIN_SWEEP,
+                        "experiment_id": exp,
+                        "traffic_profile": "Traffic_I",
+                        "d_free_ms": d_free,
+                        "d_sensing_ms": 10.0,
+                        "zigbee_period_ms": 1000.0,
+                        "seed": seed,
+                        "zigbee_gain_ratio": gz + noise,
+                        "wifi_drop_rate": 0.0,
+                        "spectrum_utilization": 0.8,
+                        "wifi_jitter_ms": 1.0,
+                        "moved_fg_count": 3.0,
+                        "max_fg_delay_ms": 10.0,
+                        "wifi_collision_rate": 0.0,
+                    }
+                )
+    for window in (10.0, 50.0):
+        rows.append({**rows[-1], "sweep": SENSING_SWEEP, "d_sensing_ms": window})
+    return pd.DataFrame(rows)
+
+
+def test_average_seeds_collapses_seed_rows() -> None:
+    means = average_seeds(sweep_results())
+    main = means[means["sweep"] == MAIN_SWEEP]
+    assert len(main) == 4  # 2 experiments x 2 demands.
+    exp4 = main[main["experiment_id"] == "Exp_4"]
+    assert exp4["zigbee_gain_ratio"].tolist() == pytest.approx([0.96, 0.96])
+
+
+def test_write_figures_draws_fig11_and_fig16(tmp_path: Path) -> None:
+    paths = write_figures(sweep_results(), tmp_path)
+    names = sorted(p.name for p in paths)
+    assert names == ["fig11_Traffic_I_tzb1000.png", "fig16_sensing.png"]
+    assert all(p.exists() and p.stat().st_size > 0 for p in paths)
+    assert (tmp_path / "data" / "fig16_sensing.csv").exists()
+
+
+def test_write_figures_rejects_rows_without_scenario_columns(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match="traffic_profile"):
+        write_figures(sweep_results().drop(columns=["traffic_profile"]), tmp_path)

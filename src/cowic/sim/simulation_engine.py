@@ -130,11 +130,17 @@ class SimulationConfig:
 
     @classmethod
     def from_yaml(
-        cls, config_path: Path, trace_dir: Path = TRACE_DATA_DIR
+        cls,
+        config_path: Path,
+        trace_dir: Path = TRACE_DATA_DIR,
+        duration_s: float | None = None,
     ) -> "SimulationConfig":
         """Load an experiment config (``configs/exp*.yaml``), generating
         its WiFi trace on first use and reusing it on later calls with the
         same experiment id, traffic profile, duration, and seed.
+
+        ``duration_s``, if given, replaces the config's ``duration_s`` for
+        both the run and the generated trace.
         """
         with open(config_path) as handle:
             raw = yaml.safe_load(handle)
@@ -157,7 +163,12 @@ class SimulationConfig:
             raise ConfigurationError(f"{config_path}: missing keys {missing}")
 
         seed = int(raw.get("random_seed", 42))
-        duration_s = float(raw["duration_s"])
+        if duration_s is None:
+            duration_s = float(raw["duration_s"])
+        if not math.isfinite(duration_s) or duration_s <= 0:
+            raise ConfigurationError(
+                f"duration_s must be finite and positive, got {duration_s}"
+            )
         profile_stem = Path(raw["traffic_profile"]).stem
         trace_path = (
             trace_dir

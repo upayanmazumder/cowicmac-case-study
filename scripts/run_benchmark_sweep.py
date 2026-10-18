@@ -7,7 +7,8 @@ A second sweep varies the sensing window for Exp 4 on Traffic I (Fig. 16).
 Each run gives one CSV row. The row holds the sweep parameters and the
 :class:`~cowic.analysis.metrics.SimulationMetrics` fields. The script then
 averages the seeds and draws Figs. 11, 14 and 16 with
-:class:`~cowic.analysis.plotter.ResultPlotter`.
+:func:`cowic.analysis.plotter.write_figures`. To redraw the figures from an
+existing CSV, run ``python -m cowic.analysis``.
 
 Usage::
 
@@ -30,11 +31,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))  # Makes the top-level "traces" importable.
 
-from cowic.analysis.metrics import (  # noqa: E402
-    MetricsCalculator,
-    zigbee_clean_capacity_ms,
+from cowic.analysis.metrics import measure_run  # noqa: E402
+from cowic.analysis.plotter import (  # noqa: E402
+    MAIN_SWEEP,
+    REQUIRED_COLUMNS,
+    SENSING_SWEEP,
+    write_figures,
 )
-from cowic.analysis.plotter import REQUIRED_COLUMNS, ResultPlotter  # noqa: E402
 from cowic.exceptions import ConfigurationError  # noqa: E402
 from cowic.sim.simulation_engine import (  # noqa: E402
     SimulationConfig,
@@ -66,8 +69,6 @@ QUICK_DURATION_S = 3.0
 QUICK_D_FREE_MS: tuple[float, ...] = (31.0, 62.0)
 QUICK_D_SENSING_MS: tuple[float, ...] = (10.0, 50.0)
 
-MAIN_SWEEP = "main"
-SENSING_SWEEP = "sensing"
 SENSING_CONFIG = "configs/exp4_cowic_full.yaml"
 SENSING_TRAFFIC = "Traffic_I"
 SENSING_PERIOD_MS = 1000.0
@@ -163,27 +164,8 @@ def run_point(
     began = time.perf_counter()
     summary = engine.run()
     elapsed_s = time.perf_counter() - began
-    if engine.last_medium is None:
-        raise RuntimeError("SimulationEngine.run() did not record a medium")
-
     cycles = int(summary["cycles_run"])
-    horizon_ms = duration_s * 1000.0
-    metrics = MetricsCalculator().compute(
-        engine.last_medium.transmissions,
-        engine.last_decisions,
-        engine.last_frame_groups,
-        horizon_ms=horizon_ms,
-        zigbee_capacity_ms=zigbee_clean_capacity_ms(config.d_free_ms, cycles),
-        control_airtime_ms=sum(
-            max(
-                0.0,
-                min(record.end_time_ms, horizon_ms) - max(record.start_time_ms, 0.0),
-            )
-            for record in engine.last_medium.transmissions
-            if record.protocol == "zbeacon" and record.success
-        ),
-        delivered_fg_ids=engine.delivered_wifi_fg_ids(),
-    )
+    metrics = measure_run(engine, summary)
     row: dict[str, float | str] = {
         "sweep": point.sweep,
         "experiment_id": config.scenario_name,
@@ -239,62 +221,6 @@ def run_sweep(
                 if progress is not None:
                     progress(index, len(points), point)
     return pd.DataFrame(rows)
-
-
-def average_seeds(results: pd.DataFrame) -> pd.DataFrame:
-    """Average the metrics over seeds, for one row per scenario."""
-    keys = [
-        "sweep",
-        "experiment_id",
-        "traffic_profile",
-        "d_free_ms",
-        "d_sensing_ms",
-        "zigbee_period_ms",
-    ]
-    numeric = [c for c in results.columns if c not in keys and c != "seed"]
-    return results.groupby(keys, as_index=False)[numeric].mean()
-
-
-def write_figures(results: pd.DataFrame, figures_dir: Path) -> list[Path]:
-    """Draw Fig. 11/14 for each traffic profile and period, and Fig. 16."""
-    plotter = ResultPlotter(figures_dir)
-    means = average_seeds(results)
-    data_dir = figures_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
-
-    main = means[means["sweep"] == MAIN_SWEEP]
-    for (traffic, period), group in main.groupby(
-        ["traffic_profile", "zigbee_period_ms"]
-    ):
-        fig = "fig11" if traffic == "Traffic_I" else "fig14"
-        name = f"{fig}_{traffic}_tzb{int(period)}"
-        csv_path = data_dir / f"{name}.csv"
-        group.to_csv(csv_path, index=False)
-        paths.append(
-            plotter.plot_d_free_sweep(
-                csv_path,
-                title=f"{traffic}, $T_{{ZB}}$ = {int(period)} ms",
-                filename=name,
-            )
-        )
-
-    sensing = means[means["sweep"] == SENSING_SWEEP].copy()
-    if not sensing.empty:
-        # One line per demand, as Exp 4-1 to Exp 4-4 in Fig. 16.
-        sensing["experiment_id"] = sensing["d_free_ms"].map(
-            lambda d: f"Exp_4 (D_free={d:g} ms)"
-        )
-        csv_path = data_dir / "fig16_sensing.csv"
-        sensing.to_csv(csv_path, index=False)
-        paths.append(
-            plotter.plot_sensing_sensitivity(
-                csv_path,
-                title=f"Exp 4, {SENSING_TRAFFIC}, various $D_{{sensing}}$",
-                filename="fig16_sensing",
-            )
-        )
-    return paths
 
 
 def acceptance_report(results: pd.DataFrame) -> tuple[bool, str]:

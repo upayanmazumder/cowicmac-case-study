@@ -64,7 +64,7 @@
 | Criterion                | Pure Python (SimPy + PuLP)                     | ns-3 (C++ / Python API)                     | OMNeT++ / INET                           |
 | ------------------------ | ---------------------------------------------- | ------------------------------------------- | ---------------------------------------- |
 | **Protocol Fidelity**    | High for MAC/scheduling logic; abstract PHY    | Full 802.11ax & 802.15.4 PHY/MAC models     | Full PHY/MAC, complex C++ architecture   |
-| **MILP Integration**     | Native (`PuLP` + CBC / HiGHS / GLPK)           | External C++ solver binding required        | External C++ solver binding required     |
+| **MILP Integration**     | Native (`PuLP` + HiGHS)                        | External C++ solver binding required        | External C++ solver binding required     |
 | **Trace Playback**       | Native pandas/numpy streaming                  | Custom TraceSource / App generation         | Custom message generators                |
 | **Laptop Feasibility**   | Runs in seconds/minutes, zero compile overhead | Heavy compile times, high memory footprint  | Heavy setup and configuration            |
 | **Team Maintainability** | Clean Python 3.11+, modular dataclasses        | Complex debugging across C++ pointer layers | Steep learning curve for OMNeT NED files |
@@ -72,7 +72,7 @@
 ### 3.2 Recommended Stack: Dual-Layer Python Architecture
 
 - **Core Engine:** **SimPy** (discrete-event simulation) + **PuLP / HiGHS** (MILP solver).
-- **Rationale:** The base paper explicitly states that the MAC-layer evaluation is driven by real-world WiFi traffic traces aggregated at the Frame Group level, with temporal collision logic. Implementing this in a dedicated SimPy discrete-event framework provides 100% mathematical fidelity to the paper's MILP (Eq. 11-17) and L-WSA search space without the unnecessary compilation and integration friction of ns-3 C++ Spectrum modules.
+- **Rationale:** The base paper explicitly states that the MAC-layer evaluation is driven by real-world WiFi traffic traces aggregated at the Frame Group level, with temporal collision logic. A dedicated SimPy discrete-event framework implements the paper's MILP (Eq. 11-17) and L-WSA search space directly without the unnecessary compilation and integration friction of ns-3 C++ Spectrum modules.
 - **Secondary / Extension:** Standardized trace formats exportable to ns-3 scripts if low-level RF fading validation is later required.
 
 ---
@@ -84,47 +84,48 @@ cowicmac-case-study/
 ├── pyproject.toml                     # Python dependencies & build config
 ├── README.md                          # Quickstart & replication instructions
 ├── configs/                           # Experiment configuration presets
-│   ├── base_traffic1.yaml             # High-load Traffic I profile
-│   ├── base_traffic3.yaml             # Low-load Traffic III profile
+│   ├── base_traffic1.yaml             # Traffic I profile (densest, Table 5)
+│   ├── base_traffic2.yaml             # Traffic II profile
+│   ├── base_traffic3.yaml             # Traffic III profile
+│   ├── base_traffic4.yaml             # Traffic IV profile (lightest)
 │   ├── exp1_uncoordinated.yaml        # Baseline Exp 1
 │   ├── exp2_opportunistic.yaml        # Opportunistic Exp 2
 │   ├── exp3_ecc.yaml                  # ECC Scheme Exp 3
 │   ├── exp4_cowic_full.yaml           # Full CoWiC-MAC Exp 4
 │   ├── exp5_rigid_vacate.yaml         # Ablation Exp 5
 │   └── exp6_overhead_free.yaml        # Ablation Exp 6
-├── traces/                            # Replay traffic datasets
-│   ├── synthetic_generator.py         # Realistic trace generator matching Table 5
-│   └── data/                          # Pre-generated Traffic I-IV traces (.csv / .parquet)
+├── traces/                            # WiFi traffic traces
+│   ├── synthetic_generator.py         # Trace generator matching Table 5
+│   ├── playback.py                    # Trace loading and per-cycle replay
+│   └── data/                          # Generated traces (.parquet, not committed)
+├── scripts/
+│   ├── run_benchmark_sweep.py         # Exp 1-6 sweep over D_free, T_ZB, traffic, seed
+│   └── build_docs.py                  # Builds the review PDFs
 ├── src/cowic/
-│   ├── __init__.py
-│   ├── models/                        # Core data structures & packet definitions
-│   │   ├── __init__.py
-│   │   ├── frame_group.py             # WiFi Frame Group abstraction (arrival, dur, deadline)
-│   │   └── superframe.py              # ZigBee Superframe configuration (CAP, CFP, slots)
-│   ├── wifi/                          # WiFi AP & STA logic
-│   │   ├── __init__.py
+│   ├── exceptions.py                  # CoWiCError hierarchy
+│   ├── models/
+│   │   ├── frame_group.py             # WiFi Frame Group and scheduling decision
+│   │   └── superframe.py              # ZigBee superframe configuration and packets
+│   ├── wifi/
 │   │   ├── ap_orchestrator.py         # AP scheduling loop & state machine
-│   │   └── milp_scheduler.py          # PuLP MILP formulation (Equations 11-17)
-│   ├── zigbee/                        # ZigBee Coordinator & Node logic
-│   │   ├── __init__.py
+│   │   ├── milp_scheduler.py          # PuLP MILP formulation (Equations 11-17)
+│   │   ├── baselines.py               # Exp 1-3 schedulers (static, gap search, ECC)
+│   │   └── fallback.py                # Lightweight whitespace-expansion scheduler
+│   ├── zigbee/
 │   │   ├── coordinator.py             # ZC state machine & demand reporting
-│   │   └── lwsa_adapter.py            # L-WSA discrete search algorithm (Algorithm 2)
-│   ├── ctc/                           # Cross-Technology Communication channel
-│   │   ├── __init__.py
+│   │   └── lwsa_adapter.py            # L-WSA discrete search (Eq. 6-10)
+│   ├── ctc/
 │   │   └── channel.py                 # WBeacon/ZBeacon exchange & PER modeling
-│   ├── sim/                           # Discrete-event simulation runner
-│   │   ├── __init__.py
+│   ├── sim/
+│   │   ├── __main__.py                # `python -m cowic.sim --config ...`
 │   │   ├── channel_medium.py          # Shared 2.4 GHz medium collision evaluator
 │   │   └── simulation_engine.py       # SimPy execution environment
-│   └── analysis/                      # Metrics calculation & plotting
-│       ├── __init__.py
+│   └── analysis/
+│       ├── __main__.py                # `python -m cowic.analysis --results-csv ...`
 │       ├── metrics.py                 # G_z, PDR_w, U_eff, Jitter, Moved FGs, Max Delay
-│       └── plotter.py                 # Publication-grade figures (reproducing Figs 11-17)
-└── tests/                             # Verification & regression test suite
-    ├── test_milp_solver.py            # Unit test for MILP optimality & non-overlap
-    ├── test_lwsa_algorithm.py         # Unit test for L-WSA superframe maximization
-    ├── test_collision_detector.py     # Unit test for shared-channel collision logic
-    └── test_end_to_end.py             # Integration test running Exp 1 vs Exp 4
+│       └── plotter.py                 # Figs. 11-14 and 16 (Figs. 15 and 17: #45)
+└── tests/                             # 13 test modules, one per component plus
+                                       # end-to-end, sweep, and CLI tests
 ```
 
 ---
@@ -142,14 +143,23 @@ The AP optimizes scheduled start times $s'_k$ and window placements:
 + \sum_{k=1}^K \mu_k P_k
 ```
 
+with the deadline-aware postponement cost of Eq. 2,
+
+```math
+\mu_k = \frac{\mu_\text{base}}{\max\left(\epsilon,\ e_k - (T_\text{end} + d_k)\right)}
+```
+
+(`mu_base = 100`, $\epsilon$ = 1 µs in `milp_scheduler.py`).
+
 Subject to:
 
+0. Window placement (Eq. 3/13): $T^\text{end}_\text{free} = T^\text{start}_\text{free} + D_\text{free}$, $T^\text{end}_\text{sensing} = T^\text{start}_\text{sensing} + D_\text{sensing}$, both inside $[T_\text{start}, T_\text{end}]$, and non-overlapping through the binary $b_\text{ws}$: $T^\text{end}_\text{free} \le T^\text{start}_\text{sensing} + M(1 - b_\text{ws})$ and $T^\text{end}_\text{sensing} \le T^\text{start}_\text{free} + M b_\text{ws}$.
 1. $y_k \ge s'_k - s_k$, $y_k \ge 0$ (Delay penalty).
 2. $a_k \le s'_k + M P_k$ (Causality).
 3. $s'_k + d_k \le e_k + M P_k$ and $s'_k + d_k \le T_\text{end} + M P_k$ (Deadlines & cycle bounds).
 4. $T_\text{end} + d_k \le e_k + M (1 - P_k)$ (Feasibility of postponed FGs in next cycle).
 5. Inter-FG conflict avoidance via Big-M ordering variables $b_{kj}$.
-6. Overlap indicator bounding $z_k^\text{free}$ and $z_k^\text{sense}$.
+6. Overlap indicators $z_k^\text{free}$ and $z_k^\text{sense}$. The code does not copy Appendix A's Eq. 16 literally: as extracted, it forces $z_k = 1$ for an FG that does *not* overlap the window, which contradicts $\sum_k z_k^\text{sense} = 0$. It uses a disjunctive encoding instead: if $z_k = 0$, the FG lies entirely before or entirely after the window (side chosen by a binary $w_k$).
 7. Strict protection of sensing window: $\sum_{k=1}^K z_k^\text{sense} = 0$.
 
 ### 5.2 ZigBee Superframe Adaptation (L-WSA Search)
@@ -165,7 +175,7 @@ The ZC maximizes:
 Over discrete parameters:
 
 - $t_\text{SfSlot} \in \{t_\text{slot}^\text{base} \cdot 2^{SO}\}$, where $SO \in [0, 14]$.
-- $j \in [0, 7]$ (CFP slots), $i + j \le 15$ (CAP slots).
+- $j \in [0, 7]$ CFP slots and $i$ CAP slots, with $i + j \le 15$.
 - $t_\text{offset} \in [0, \text{whitespace duration}]$.
 - Filter condition: $(1 + i + j) \cdot t_\text{SfSlot} \le dur_\text{end} - dur_\text{start}$.
 - Slot count $m, n$: Slots evaluated against residual WiFi fragment intervals $\mathcal{T}^\text{WiFi}$.
@@ -192,7 +202,7 @@ Over discrete parameters:
 5. **Evaluated Parameter Sweeps:**
    - $D_\text{free} \in [31, 62, 93, 123]$ ms.
    - ZigBee superframe period $T_{ZB} \in [1000, 2000, 5000]$ ms.
-   - Traffic intensities: Traffic I (high load, 90% occupancy) to Traffic IV (light load).
+   - Traffic intensities: Traffic I (high load, about 88 % occupancy: 39.2 ms FGs, 5.3 ms whitespace) to Traffic IV (light load).
    - Sensing window duration $D_\text{sensing} \in [10, 20, 50, 100]$ ms.
 
 ---
@@ -223,7 +233,7 @@ Presentation ownership matches Review 2:
 - **Milestone 1 (Foundation & Trace Engine):** Establish trace generator matching Table 5 statistical distributions and basic SimPy collision medium.
 - **Milestone 2 (Optimization Modules):** Implement and unit-test PuLP MILP scheduler and L-WSA discrete search.
 - **Milestone 3 (End-to-End Simulation):** Integrate AP orchestrator, ZC adapter, and CTC exchange for Exp 1 and Exp 4 on Traffic I.
-- **Milestone 4 (Full Benchmark & Ablations):** Execute Exp 1–6 across all traffic profiles, generate replication plots (Figs 11–17).
+- **Milestone 4 (Full Benchmark & Ablations):** Execute Exp 1–6 across all traffic profiles, generate replication plots (Figs 11–14 and 16; Figs 15 and 17 are tracked in #45).
 - **Milestone 5 (Paper & Case Study Delivery):** Draft final case study report mapping quantitative results to original base paper claims.
 
 ---
@@ -246,4 +256,4 @@ Presentation ownership matches Review 2:
 
 1. Initialize virtual environment and install dependencies (`simpy`, `pulp`, `numpy`, `pandas`, `pyyaml`, `matplotlib`, `pytest`).
 2. Implement `traces/synthetic_generator.py` to produce reproducible Frame Group sequences matching Table 5.
-3. Build `src/cowic/wifi/milp_scheduler.py` and run deterministic unit tests with CBC/HiGHS.
+3. Build `src/cowic/wifi/milp_scheduler.py` and run deterministic unit tests with HiGHS.

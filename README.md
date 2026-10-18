@@ -25,15 +25,15 @@ cowicmac-case-study/
 ├── CONTRIBUTORS.md             # Contributor roles and module ownership
 ├── IMPLEMENTATION_PLAN.md      # Detailed system specification and formulas
 ├── configs/                    # Experiment configuration presets (Exp 1 to Exp 6)
-├── traces/                     # Trace generators and data storage
-├── scripts/                    # Benchmark sweep runner
+├── traces/                     # Synthetic trace generator and trace playback
+├── scripts/                    # Benchmark sweep runner and document builder
 ├── src/cowic/                  # Core protocol and simulation package
 │   ├── models/                 # Dataclass models (FrameGroup, SuperframeConfig)
-│   ├── wifi/                   # AP orchestrator and MILP scheduler
+│   ├── wifi/                   # AP orchestrator, MILP scheduler, Exp 1-3 baselines, fallback
 │   ├── zigbee/                 # ZigBee coordinator and L-WSA adapter
 │   ├── ctc/                    # Cross-technology signaling channel model
-│   ├── sim/                    # SimPy simulation engine and collision medium
-│   └── analysis/               # Metrics calculator and figure plotter
+│   ├── sim/                    # SimPy engine, collision medium, `python -m cowic.sim`
+│   └── analysis/               # Metrics, figure plotter, `python -m cowic.analysis`
 ├── tests/                      # Automated unit and integration test suite
 └── reviews/                    # Course review documents and base paper PDF
 ```
@@ -60,12 +60,15 @@ Run the full test suite:
 pytest
 ```
 
-Run linter and type checks:
+Run linter, format, and type checks:
 
 ```bash
 ruff check .
+ruff format --check .
 mypy src/ tests/
 ```
+
+CI also fails if test coverage of `src/cowic` drops below 85 %.
 
 ### Running Experiments
 
@@ -75,10 +78,10 @@ Generate a synthetic traffic trace:
 python -m traces.synthetic_generator --profile Traffic_I --output traces/data/traffic1.parquet
 ```
 
-Run a specific experiment:
+Run one experiment and print its metrics (add `--duration 10` for a shorter run, `--json` for JSON output):
 
 ```bash
-python -m cowic.sim.simulation_engine --config configs/exp4_cowic_full.yaml
+python -m cowic.sim --config configs/exp4_cowic_full.yaml
 ```
 
 Run the benchmark sweep (quick smoke run):
@@ -95,10 +98,10 @@ python scripts/run_benchmark_sweep.py --output-csv results/benchmark_results.csv
 
 ### Evaluation Results
 
-After running the benchmark sweep, generate figures:
+The sweep draws the figures itself. To redraw them from an existing results CSV:
 
 ```bash
-python -m cowic.analysis.plotter --results-dir results/ --output-dir figures/
+python -m cowic.analysis --results-csv results/benchmark_results.csv --output-dir figures/
 ```
 
 ## Base Paper

@@ -191,17 +191,30 @@ def test_schedule_postponed_fg_reported_at_cycle_end() -> None:
     assert decision.delay_ms == 5.0
 
 
-def test_schedule_respects_minimum_delay_for_moved_fg() -> None:
-    """A FG forced to move later reports a non-negative, consistent delay."""
-    scheduler = MILPScheduler()
-    fgs = [_fg(1, start=0.0, duration=20.0, deadline=500.0)]
+def test_schedule_overlaps_the_cheaper_fg_instead_of_moving_either() -> None:
+    """Eq. 1 term 1 prices overlap by FG duration: with two FGs packed
+    back-to-back and no room for d_free elsewhere, the optimal free
+    window overlaps the 10 ms FG (cost 10) rather than the 30 ms FG
+    (cost 30). Neither FG needs to move to achieve this (the window
+    simply lands on the cheaper FG's existing slot), so this is strictly
+    cheaper than any solution that pays lambda * y to move either FG
+    clear, verifying the MILP actually minimizes Eq. 1 rather than
+    defaulting to "do nothing"."""
+    scheduler = MILPScheduler(mu_base=1e6)
+    cheap = _fg(1, start=0.0, duration=10.0, deadline=500.0, arrival=0.0)
+    costly = _fg(2, start=10.0, duration=30.0, deadline=500.0, arrival=10.0)
     result = scheduler.schedule(
-        fgs, d_free_ms=25.0, d_sensing_ms=0.0, t_start_ms=0.0, t_end_ms=200.0
+        [cheap, costly], d_free_ms=10.0, d_sensing_ms=0.0, t_start_ms=0.0, t_end_ms=40.0
     )
-    decision = result.decisions[0]
-    expected_delay = max(0.0, decision.scheduled_start_ms - 0.0)
-    assert decision.delay_ms == expected_delay
-    assert decision.delay_ms >= 0.0
+    assert result.solver_status == "Optimal"
+    assert result.t_free_start_ms == pytest.approx(0.0)
+    assert result.t_free_end_ms == pytest.approx(10.0)
+    decisions = {d.fg_id: d for d in result.decisions}
+    assert decisions[1].scheduled_start_ms == pytest.approx(0.0)
+    assert decisions[2].scheduled_start_ms == pytest.approx(10.0)
+    assert decisions[1].delay_ms == pytest.approx(0.0)
+    assert decisions[2].delay_ms == pytest.approx(0.0)
+    assert not decisions[1].is_postponed and not decisions[2].is_postponed
 
 
 def test_schedule_stale_fg_does_not_corrupt_big_m() -> None:

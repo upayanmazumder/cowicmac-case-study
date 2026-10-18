@@ -32,14 +32,19 @@ import math
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from cowic.exceptions import ConfigurationError
 from cowic.models.frame_group import FrameGroup, SchedulingDecision
 from cowic.sim.channel_medium import TransmissionRecord
 
+if TYPE_CHECKING:
+    from cowic.sim.simulation_engine import SimulationEngine
+
 WIFI = "wifi"
 ZIGBEE = "zigbee"
 ZIGBEE_BEACON = "zigbee_beacon"
+ZBEACON = "zbeacon"
 MOVED_TOLERANCE_MS = 1e-6  # Delays below this are solver round-off, not moves.
 
 
@@ -230,6 +235,35 @@ class MetricsCalculator:
             max_fg_delay_ms=max_delay,
             wifi_collision_rate=wifi_collision_rate(transmissions, horizon_ms),
         )
+
+
+def measure_run(
+    engine: "SimulationEngine", summary: Mapping[str, float]
+) -> SimulationMetrics:
+    """Section 5.1 metrics of the last :meth:`SimulationEngine.run`.
+
+    ``summary`` is the dict that ``run()`` returned. Control airtime for
+    U_eff is the successful ZBeacon airtime on the medium.
+
+    Raises:
+        RuntimeError: If ``engine`` has not run yet.
+    """
+    medium = engine.last_medium
+    if medium is None:
+        raise RuntimeError("measure_run() called before SimulationEngine.run()")
+    config = engine.config
+    horizon_ms = config.duration_s * 1000.0
+    cycles = int(summary["cycles_run"])
+    zbeacons = [r for r in medium.transmissions if r.protocol == ZBEACON]
+    return MetricsCalculator().compute(
+        medium.transmissions,
+        engine.last_decisions,
+        engine.last_frame_groups,
+        horizon_ms=horizon_ms,
+        zigbee_capacity_ms=zigbee_clean_capacity_ms(config.d_free_ms, cycles),
+        control_airtime_ms=_airtime(zbeacons, ZBEACON, True, horizon_ms),
+        delivered_fg_ids=engine.delivered_wifi_fg_ids(),
+    )
 
 
 def _is_dropped(decision: SchedulingDecision, fg: FrameGroup) -> bool:
