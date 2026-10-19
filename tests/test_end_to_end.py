@@ -9,6 +9,7 @@ from cowic.exceptions import ConfigurationError
 from cowic.sim.simulation_engine import (
     SimulationConfig,
     SimulationEngine,
+    _build_scheduler,
     _pending_packets,
     _synthesize_zigbee_packets,
 )
@@ -708,3 +709,16 @@ def test_beacon2_does_not_overlap_first_cfp_packet_without_cap() -> None:
             p.start_time_ms + p.duration_ms <= slot_ms * (2 + k) + 1e-9
             for k, p in enumerate(cfp)
         )
+
+
+@pytest.mark.parametrize("mode", ["milp_soft_constraint", "milp_hard_constraint"])
+def test_milp_accepts_unproven_solutions_and_reports_them(
+    short_trace: Path, mode: str
+) -> None:
+    """Issue #39 policy: a time-limited MILP solution meets every hard
+    constraint, so the AP uses it, and the run summary counts it."""
+    config = replace(_exp4_config(short_trace), wifi_scheduling=mode)
+    _, statuses = _build_scheduler(config)
+    assert statuses == {"Optimal", "Integer Feasible"}
+    result = SimulationEngine(replace(config, duration_s=1.0)).run()
+    assert "milp_unproven_cycles" in result

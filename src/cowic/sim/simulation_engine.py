@@ -58,6 +58,8 @@ from cowic.wifi.baselines import (
     schedule_uncoordinated,
 )
 from cowic.wifi.milp_scheduler import (
+    OPTIMAL_STATUS,
+    UNPROVEN_STATUS,
     HardConstraintMILPScheduler,
     MILPScheduler,
     ScheduleResult,
@@ -255,7 +257,9 @@ def _build_scheduler(config: SimulationConfig) -> tuple[Scheduler, frozenset[str
             milp.lambda_weight = config.lambda_delay_weight
         if config.mu_base_cost is not None:
             milp.mu_base = config.mu_base_cost
-        return milp, frozenset({"Optimal"})
+        # A time-limited solution still meets every hard constraint, so the
+        # AP uses it; _RunStats counts these cycles (milp_unproven_cycles).
+        return milp, frozenset({OPTIMAL_STATUS, UNPROVEN_STATUS})
     raise ConfigurationError(f"Unknown wifi_scheduling {config.wifi_scheduling!r}")
 
 
@@ -459,6 +463,7 @@ class _RunStats:
     wbeacon_delivered: int = 0
     wbeacon_lost: int = 0
     csma_ca_fallback_cycles: int = 0
+    milp_unproven_cycles: int = 0
     zigbee_packets_attempted: int = 0
     max_fg_delay_ms: float = 0.0
 
@@ -467,6 +472,8 @@ class _RunStats:
         self.cycles_run += 1
         if outcome.used_fallback:
             self.fallback_cycles += 1
+        if outcome.schedule.solver_status == UNPROVEN_STATUS:
+            self.milp_unproven_cycles += 1
         if outcome.wbeacon is not None:
             if outcome.wbeacon_delivered:
                 self.wbeacon_delivered += 1
@@ -516,6 +523,7 @@ class _RunStats:
             "wbeacon_delivered": float(self.wbeacon_delivered),
             "wbeacon_lost": float(self.wbeacon_lost),
             "csma_ca_fallback_cycles": float(self.csma_ca_fallback_cycles),
+            "milp_unproven_cycles": float(self.milp_unproven_cycles),
             "max_fg_delay_ms": self.max_fg_delay_ms,
             "zigbee_packets_attempted": float(self.zigbee_packets_attempted),
             "wifi_transmissions": float(total_wifi),

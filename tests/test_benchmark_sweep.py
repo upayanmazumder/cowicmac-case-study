@@ -69,6 +69,7 @@ def test_run_point_returns_plotter_ready_row(tmp_path: Path) -> None:
     assert row["d_free_ms"] == 31.0
     assert row["seed"] == 42
     assert row["cycles_run"] == 2.0
+    assert row["milp_unproven_cycles"] == 0.0  # Issue #39: reported per run.
     assert 0.0 <= float(row["zigbee_gain_ratio"]) <= 1.0
 
 

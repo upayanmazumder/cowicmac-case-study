@@ -36,6 +36,12 @@ from cowic.models.frame_group import FrameGroup, SchedulingDecision
 # for FGs whose deadline has already effectively passed by t_end_ms.
 EPSILON_MS = 1e-3
 
+OPTIMAL_STATUS = "Optimal"
+# A solution the solver found but did not prove optimal, e.g. after a time
+# limit. PuLP reports these as LpStatusOptimal and puts the real quality in
+# sol_status, so the status is renamed here to keep it visible.
+UNPROVEN_STATUS = "Integer Feasible"
+
 
 @dataclass(frozen=True)
 class ScheduleResult:
@@ -72,7 +78,16 @@ def _big_m(
     arrival_gap = max(
         (fg.arrival_time_ms - t_start_ms for fg in frame_groups), default=0.0
     )
-    stale_extra = max(0.0, deadline_gap, arrival_gap)
+    # A postponed FG's deviation constraint relaxes by M, so M must also
+    # exceed |s'_k - s_k| when the original start lies outside the cycle.
+    origin_gap = max(
+        (
+            max(t_start_ms - fg.original_start_ms, fg.original_start_ms - t_end_ms)
+            for fg in frame_groups
+        ),
+        default=0.0,
+    )
+    stale_extra = max(0.0, deadline_gap, arrival_gap, origin_gap)
     return horizon_ms + max_duration + max(d_free_ms, d_sensing_ms) + stale_extra + 1.0
 
 
@@ -95,6 +110,8 @@ class MILPScheduler:
             PuLP HiGHS backend; pass a custom solver to use another backend.
         time_limit_s: Wall-clock solver time limit, forwarded to the
             default HiGHS solver. Ignored if a custom ``solver`` is supplied.
+            If the limit stops the solve with a feasible solution, the
+            result has ``solver_status == UNPROVEN_STATUS``, not "Optimal".
         hard_free_window: If true, no scheduled FG may overlap the free
             window (``sum(z_free) == 0``) and an FG that cannot move clear
             is vacated to the next cycle even if that misses its deadline.
@@ -233,8 +250,13 @@ class MILPScheduler:
             s = s_prime[fid]
             d = fg.duration_ms
 
-            # Delay definition (Eq. 12): y_k >= s'_k - s_k, y_k >= 0.
-            prob += y[fid] >= s - fg.original_start_ms
+            # Deviation (Eq. 1 term 3: lambda * |s'_k - s_k|). Both sides are
+            # needed; with only y_k >= s'_k - s_k, moving an FG earlier than
+            # its original start would cost nothing. A postponed FG (P_k = 1)
+            # is not sent this cycle; mu_k already prices it, so its
+            # placeholder s'_k carries no deviation cost.
+            prob += y[fid] >= s - fg.original_start_ms - big_m * p[fid]
+            prob += y[fid] >= fg.original_start_ms - s - big_m * p[fid]
 
             # Causality / QoS / postponement feasibility (Eq. 14).
             prob += fg.arrival_time_ms <= s + big_m * p[fid]
@@ -262,10 +284,13 @@ class MILPScheduler:
             # when z=0, the FG must lie entirely before OR entirely after
             # the window (selected by w); when z=1, both constraints relax
             # and the FG may overlap at the cost of z*d_k in the objective.
-            prob += s + d <= t_free_start + big_m * (w_free[fid] + z_free[fid])
-            prob += s >= t_free_end - big_m * ((1 - w_free[fid]) + z_free[fid])
-            prob += s + d <= t_sense_start + big_m * (w_sense[fid] + z_sense[fid])
-            prob += s >= t_sense_end - big_m * ((1 - w_sense[fid]) + z_sense[fid])
+            # A postponed FG (P_k = 1) is not on air this cycle, so it does
+            # not constrain the windows, as for Eq. 15 below.
+            pk = p[fid]
+            prob += s + d <= t_free_start + big_m * (w_free[fid] + z_free[fid] + pk)
+            prob += s >= t_free_end - big_m * ((1 - w_free[fid]) + z_free[fid] + pk)
+            prob += s + d <= t_sense_start + big_m * (w_sense[fid] + z_sense[fid] + pk)
+            prob += s >= t_sense_end - big_m * ((1 - w_sense[fid]) + z_sense[fid] + pk)
 
         # Sensing window protection (Eq. 17): hard constraint, no exceptions.
         # Combined with the disjunction above, z_sense forced to 0 means
@@ -288,10 +313,15 @@ class MILPScheduler:
         solver = self.solver or pulp.HiGHS(msg=False, timeLimit=self.time_limit_s)
         prob.solve(solver)
         status = pulp.LpStatus[prob.status]
+        if status == OPTIMAL_STATUS and prob.sol_status != pulp.LpSolutionOptimal:
+            # Stopped early (time or iteration limit) with a feasible but
+            # unproven solution. It still meets every hard constraint.
+            status = UNPROVEN_STATUS
 
-        if status != "Optimal":
+        if status not in (OPTIMAL_STATUS, UNPROVEN_STATUS):
             # .value() can be None for every variable here (Infeasible, or
-            # CBC hit time_limit_s before finding a solution: "Not Solved").
+            # the solver hit time_limit_s before it found any solution:
+            # "Not Solved").
             # Silently falling back to each FG's original_start_ms and a
             # window collapsed to t_start_ms would look like a normal,
             # successful result and could overlap the sensing window,

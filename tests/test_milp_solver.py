@@ -1,10 +1,16 @@
 """Unit tests for the MILP scheduler (Eq. 11-17)."""
 
+import pulp
 import pytest
 
 from cowic.exceptions import ConfigurationError
 from cowic.models.frame_group import FrameGroup
-from cowic.wifi.milp_scheduler import HardConstraintMILPScheduler, MILPScheduler
+from cowic.wifi.milp_scheduler import (
+    OPTIMAL_STATUS,
+    UNPROVEN_STATUS,
+    HardConstraintMILPScheduler,
+    MILPScheduler,
+)
 
 
 def _fg(
@@ -326,3 +332,36 @@ def test_hard_mode_never_overlaps_free_window_under_load() -> None:
     result = HardConstraintMILPScheduler().schedule(fgs, 62.0, 10.0, 0.0, 120.0)
     assert result.solver_status == "Optimal"
     assert _free_window_overlap(fgs, result) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_moving_earlier_is_penalized_like_moving_later() -> None:
+    """Issue #36: Eq. 1 penalizes |s'_k - s_k|. The FG must end by the cycle
+    end (100 ms), so the cheapest start is 90 ms, not 0 ms."""
+    fg = FrameGroup(1, 0.0, 10.0, 500.0, 95.0, False)
+    result = MILPScheduler(lambda_weight=1.0, mu_base=1e6).schedule(
+        [fg], 0.0, 0.0, 0.0, 100.0
+    )
+    assert result.solver_status == OPTIMAL_STATUS
+    (decision,) = result.decisions
+    assert not decision.is_postponed
+    assert decision.scheduled_start_ms == pytest.approx(90.0, abs=1e-6)
+
+
+class _TimeLimitedSolver(pulp.LpSolver):  # type: ignore[misc]
+    """Stub that reports what PuLP reports after a solver time limit."""
+
+    def actualSolve(self, lp: pulp.LpProblem, **kwargs: object) -> int:  # noqa: N802 (PuLP API)
+        for var in lp.variables():
+            var.varValue = 0.0
+        lp.assignStatus(pulp.LpStatusOptimal, pulp.LpSolutionIntegerFeasible)
+        return int(lp.status)
+
+
+def test_time_limited_solution_is_not_reported_as_optimal() -> None:
+    """Issue #39: an unproven incumbent gets a distinct status."""
+    fg = FrameGroup(1, 0.0, 10.0, 500.0, 50.0, False)
+    result = MILPScheduler(solver=_TimeLimitedSolver()).schedule(
+        [fg], 10.0, 0.0, 0.0, 100.0
+    )
+    assert result.solver_status == UNPROVEN_STATUS
+    assert result.solver_status != OPTIMAL_STATUS

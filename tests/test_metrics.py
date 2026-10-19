@@ -232,3 +232,13 @@ def test_calculator_threads_delivered_fg_ids_into_delay_overhead() -> None:
         delivered_fg_ids={1, 2},  # FG 3 excluded despite not being "dropped"
     )
     assert metrics.max_fg_delay_ms == 20.0  # only FG 2's delay remains
+
+
+def test_fg_moved_earlier_counts_as_moved() -> None:
+    """Issue #36: delay_ms is never negative, so an early move must be
+    detected from the scheduled start."""
+    fg = _fg(7, 50.0, 10.0, 100.0)
+    early = SchedulingDecision(7, 40.0, False, 0.0)
+    _, moved, max_delay = delay_overhead([early], {7: fg})
+    assert moved == 1
+    assert max_delay == 0.0
