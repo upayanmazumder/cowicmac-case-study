@@ -41,6 +41,8 @@ OPTIMAL_STATUS = "Optimal"
 # limit. PuLP reports these as LpStatusOptimal and puts the real quality in
 # sol_status, so the status is renamed here to keep it visible.
 UNPROVEN_STATUS = "Integer Feasible"
+# An unproven incumbent cannot establish that its FG drops are necessary.
+UNPROVEN_DROP_STATUS = "Unproven Drops"
 
 
 @dataclass(frozen=True)
@@ -354,9 +356,16 @@ class MILPScheduler:
         prob.solve(solver)
         status = pulp.LpStatus[prob.status]
         if status == OPTIMAL_STATUS and prob.sol_status != pulp.LpSolutionOptimal:
-            # Stopped early (time or iteration limit) with a feasible but
-            # unproven solution. It still meets every hard constraint.
             status = UNPROVEN_STATUS
+        if status == UNPROVEN_STATUS and any(
+            variable.value() is not None and variable.value() > 0.5
+            for variable in drop.values()
+        ):
+            # A feasible incumbent may drop FGs that a better schedule can
+            # serve. Only a proven optimum establishes the minimum drop count.
+            return self._no_solution_result(
+                frame_groups, t_start_ms, t_end_ms, UNPROVEN_DROP_STATUS, began
+            )
 
         if status not in (OPTIMAL_STATUS, UNPROVEN_STATUS):
             # .value() can be None for every variable here (Infeasible, or

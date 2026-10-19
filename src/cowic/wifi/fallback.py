@@ -31,6 +31,8 @@ FALLBACK_STATUS = "fallback_whitespace"
 NO_SENSING_STATUS = "fallback_no_sensing"
 # Exp 5 fallback: full window reserved, overlapping WiFi vacated.
 VACATE_STATUS = "fallback_vacate"
+# The cycle can hold sensing but not the full requested free window.
+VACATE_TRUNCATED_STATUS = "fallback_vacate_truncated"
 _SEARCH_STEPS = 40  # Bisection steps; resolution is cycle_length / 2**40.
 
 
@@ -133,14 +135,12 @@ def vacate_window(
     d_sensing_ms: float = 0.0,
     channel_free_at: float = -math.inf,
 ) -> ScheduleResult:
-    """Exp 5 fallback: reserve the full request and vacate WiFi from it.
+    """Exp 5 fallback: vacate WiFi from the largest feasible reservation.
 
-    Exp 5 forcibly removes every WiFi FG that overlaps the reserved window
-    (Sec. 5.1), so the window is never shortened (Issue #38). It starts at
-    the largest whitespace, moved earlier if needed so it fits the cycle.
-    FGs that overlap it are deferred past it, or postponed if they then
-    miss their deadline or the cycle end. If the cycle is shorter than the
-    request, the result has ``NO_SENSING_STATUS`` and no window.
+    A full request fits whenever the remaining cycle is long enough. If it
+    does not fit, preserve sensing first and reserve the remaining time for
+    ZigBee data. Report a truncated status rather than claiming a full grant.
+    If even sensing does not fit, report ``NO_SENSING_STATUS``.
     """
     if d_free_ms < 0 or d_sensing_ms < 0:
         raise ConfigurationError(
@@ -153,12 +153,16 @@ def vacate_window(
     largest_start = max(
         gaps, key=lambda gap: gap[1] - gap[0], default=(t_start_ms, t_start_ms)
     )[0]
-    window_start = min(largest_start, t_end_ms - need)
     status = VACATE_STATUS
-    if window_start < t_start_ms:
-        window_start = window_end = t_start_ms
-        status = NO_SENSING_STATUS
+    if need > t_end_ms - t_start_ms:
+        if d_sensing_ms > t_end_ms - t_start_ms:
+            window_start = window_end = t_start_ms
+            status = NO_SENSING_STATUS
+        else:
+            window_start, window_end = t_start_ms, t_end_ms
+            status = VACATE_TRUNCATED_STATUS
     else:
+        window_start = min(largest_start, t_end_ms - need)
         window_end = window_start + need
     sense_end = min(window_start + d_sensing_ms, window_end)
     return ScheduleResult(

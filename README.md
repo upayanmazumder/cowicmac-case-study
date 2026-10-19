@@ -84,6 +84,13 @@ Run one experiment and print its metrics (add `--duration 10` for a shorter run,
 python -m cowic.sim --config configs/exp4_cowic_full.yaml
 ```
 
+The CLI and sweep report fallback cycles, unproven MILP cycles, missed sensing
+windows, and deadline-dropped frame groups. A feasible MILP result with unproven
+drops uses the fallback instead. When a cycle is too short for the full rigid
+reservation, the fallback protects sensing first and reports a truncated grant.
+ZigBee gain compares delivered payload with demand in a clean window each cycle.
+An empty grant still counts as unmet demand.
+
 Run the benchmark sweep (quick smoke run):
 
 ```bash

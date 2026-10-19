@@ -593,9 +593,9 @@ class SimulationEngine:
         self.last_demand_history: list[float] = []
         # Free window the AP announced in each cycle, as (start_ms, end_ms).
         self.last_free_windows: list[tuple[float, float]] = []
-        # G_z inputs (Sec. 5.1, Issue #33): delivered ZigBee payload and the
-        # payload the same ZigBee model would deliver in the same windows
-        # with no WiFi. Payload is t_pk minus the PHY header (Eq. 7).
+        # G_z inputs (Sec. 5.1): delivered ZigBee payload and the
+        # payload the same ZigBee model could deliver from each cycle's
+        # demand in a clean window. Payload excludes the PHY header (Eq. 7).
         self.last_zigbee_delivered_payload_ms = 0.0
         self.last_zigbee_ideal_payload_ms = 0.0
         # Per cycle: (trans_id, payload_ms) of the data packets inside the
@@ -691,16 +691,15 @@ class SimulationEngine:
         """Sum delivered and ideal ZigBee payload over all cycles.
 
         A packet counts as delivered if its final channel record succeeded.
-        Each cycle is capped at its ideal, so a scheme cannot exceed 100 %.
+        The ideal is independent of the WiFi grant, including empty grants.
         """
         delivered = ideal = 0.0
         for packets, cycle_ideal in self._zigbee_cycles:
-            cycle_delivered = sum(
+            delivered += sum(
                 payload
                 for trans_id, payload in packets
                 if medium.record(trans_id).success
             )
-            delivered += min(cycle_delivered, cycle_ideal)
             ideal += cycle_ideal
         self.last_zigbee_delivered_payload_ms = delivered
         self.last_zigbee_ideal_payload_ms = ideal
@@ -866,14 +865,6 @@ class SimulationEngine:
                 )
                 fragments.extend(sensing_fragments)
                 superframe = zc.process_wbeacon(outcome.wbeacon, fragments)
-                # G_z ideal: the same L-WSA in the same window with no WiFi.
-                free_start = outcome.schedule.t_free_start_ms
-                free_end = outcome.schedule.t_free_end_ms
-                ideal_superframe = (
-                    zc.lwsa.adapt_superframe(free_start, free_end, sensing_fragments)
-                    if free_end > free_start
-                    else superframe
-                )
             else:
                 if adaptive:
                     # Handshake timeout exhausted (Issue #3): the ZC falls
@@ -886,8 +877,15 @@ class SimulationEngine:
                     config, outcome, cycle.start_ms, cycle.end_ms
                 )
                 superframe = _fixed_superframe(fixed_start_ms, fixed_end_ms)
-                # A fixed superframe ignores WiFi, so its ideal is itself.
-                ideal_superframe = superframe
+            # Compare each cycle against its clean, demand-sized window.
+            # The granted window can be shorter or empty after a failed solve.
+            ideal_start = cycle.start_ms
+            ideal_end = min(cycle.end_ms, ideal_start + config.d_free_ms)
+            ideal_superframe = (
+                zc.lwsa.adapt_superframe(ideal_start, ideal_end, [])
+                if adaptive
+                else _fixed_superframe(ideal_start, ideal_end)
+            )
 
             ideal_payloads = _demand_payloads(
                 _synthesize_zigbee_packets(

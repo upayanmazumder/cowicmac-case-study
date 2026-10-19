@@ -178,6 +178,8 @@ def run_point(
         "cycles_run": float(cycles),
         "fallback_cycles": summary["fallback_cycles"],
         "milp_unproven_cycles": summary["milp_unproven_cycles"],
+        "sensing_missed_cycles": summary["sensing_missed_cycles"],
+        "dropped_frame_groups": summary["dropped_frame_groups"],
         "runtime_s": elapsed_s,
     }
     row.update(asdict(metrics))

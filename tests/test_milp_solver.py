@@ -7,6 +7,7 @@ from cowic.exceptions import ConfigurationError
 from cowic.models.frame_group import FrameGroup
 from cowic.wifi.milp_scheduler import (
     OPTIMAL_STATUS,
+    UNPROVEN_DROP_STATUS,
     UNPROVEN_STATUS,
     HardConstraintMILPScheduler,
     MILPScheduler,
@@ -348,11 +349,11 @@ def test_moving_earlier_is_penalized_like_moving_later() -> None:
 
 
 class _TimeLimitedSolver(pulp.LpSolver):  # type: ignore[misc]
-    """Stub that reports what PuLP reports after a solver time limit."""
+    """Mark a real HiGHS incumbent as feasible without an optimality proof."""
 
     def actualSolve(self, lp: pulp.LpProblem, **kwargs: object) -> int:  # noqa: N802 (PuLP API)
-        for var in lp.variables():
-            var.varValue = 0.0
+        pulp.HiGHS(msg=False).actualSolve(lp)
+        assert lp.status == pulp.LpStatusOptimal
         lp.assignStatus(pulp.LpStatusOptimal, pulp.LpSolutionIntegerFeasible)
         return int(lp.status)
 
@@ -365,6 +366,19 @@ def test_time_limited_solution_is_not_reported_as_optimal() -> None:
     )
     assert result.solver_status == UNPROVEN_STATUS
     assert result.solver_status != OPTIMAL_STATUS
+
+
+def test_unproven_solution_with_drops_is_not_accepted() -> None:
+    """A time-limited incumbent cannot prove its drops are unavoidable."""
+    fgs = [
+        FrameGroup(1, 0.0, 60.0, 60.0, 0.0, False),
+        FrameGroup(2, 0.0, 60.0, 60.0, 0.0, False),
+    ]
+    result = MILPScheduler(solver=_TimeLimitedSolver()).schedule(
+        fgs, 0.0, 0.0, 0.0, 100.0
+    )
+    assert result.solver_status == UNPROVEN_DROP_STATUS
+    assert result.t_free_start_ms == result.t_free_end_ms
 
 
 def test_unservable_fg_is_dropped_instead_of_failing_the_cycle() -> None:
@@ -384,18 +398,10 @@ def test_unservable_fg_is_dropped_instead_of_failing_the_cycle() -> None:
     assert dropped[0].scheduled_start_ms == 100.0  # Past its 60 ms deadline.
 
 
-def test_servable_fgs_are_never_dropped() -> None:
-    fgs = [
-        FrameGroup(1, 0.0, 30.0, 200.0, 0.0, False),
-        FrameGroup(2, 0.0, 30.0, 200.0, 10.0, False),
-    ]
-    result = MILPScheduler().schedule(fgs, 20.0, 0.0, 0.0, 100.0)
+def test_drop_penalty_keeps_fg_when_overlap_is_cheaper() -> None:
+    """An urgent FG stays on air despite unavoidable free-window overlap."""
+    fg = FrameGroup(1, 0.0, 60.0, 60.0, 0.0, False)
+    result = MILPScheduler().schedule([fg], 60.0, 0.0, 0.0, 100.0)
     assert result.solver_status == OPTIMAL_STATUS
-    by_id = {fg.fg_id: fg for fg in fgs}
-    for d in result.decisions:
-        # Postponing is allowed (it can be the cheapest choice); dropping, i.e.
-        # postponing past the deadline, is not when a schedule can serve it.
-        if d.is_postponed:
-            assert d.scheduled_start_ms + by_id[d.fg_id].duration_ms <= (
-                by_id[d.fg_id].deadline_ms
-            )
+    assert not result.decisions[0].is_postponed
+    assert result.t_free_start_ms < fg.duration_ms

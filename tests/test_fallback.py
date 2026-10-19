@@ -9,6 +9,7 @@ from cowic.wifi.fallback import (
     FALLBACK_STATUS,
     NO_SENSING_STATUS,
     VACATE_STATUS,
+    VACATE_TRUNCATED_STATUS,
     fallback_whitespace_expansion,
     vacate_window,
 )
@@ -236,7 +237,16 @@ def test_vacate_window_never_shrinks_the_reservation() -> None:
         )
 
 
-def test_vacate_window_reports_a_cycle_too_short() -> None:
-    result = vacate_window([], 0.0, 30.0, 40.0)
+def test_vacate_window_preserves_airtime_when_request_exceeds_cycle() -> None:
+    fg = _fg(1, 0.0, 20.0, bound=10.0)
+    result = vacate_window([fg], 0.0, 30.0, 40.0, 10.0)
+    assert result.solver_status == VACATE_TRUNCATED_STATUS
+    assert result.t_sense_end_ms - result.t_sense_start_ms == 10.0
+    assert result.t_free_end_ms - result.t_free_start_ms == 20.0
+    assert result.decisions[0].is_postponed
+
+
+def test_vacate_window_reports_cycle_shorter_than_sensing() -> None:
+    result = vacate_window([], 0.0, 5.0, 40.0, 10.0)
     assert result.solver_status == NO_SENSING_STATUS
     assert result.t_free_end_ms == result.t_free_start_ms
