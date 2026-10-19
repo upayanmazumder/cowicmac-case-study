@@ -14,7 +14,7 @@ from cowic.wifi.ap_orchestrator import (
     APOrchestrator,
     APState,
 )
-from cowic.wifi.fallback import FALLBACK_STATUS
+from cowic.wifi.fallback import FALLBACK_STATUS, VACATE_STATUS
 from cowic.wifi.milp_scheduler import ScheduleResult
 from traces.playback import frame_groups_from_frame, iter_cycles
 from traces.synthetic_generator import build_trace, load_profile
@@ -359,3 +359,15 @@ def test_windows_never_overlap_live_wifi_on_real_trace(profile: str) -> None:
                 continue
             fg_end = d.scheduled_start_ms + by_id[d.fg_id].duration_ms
             assert fg_end <= start + 1e-9 or d.scheduled_start_ms >= end - 1e-9
+
+
+def test_rigid_scheduler_failure_falls_back_to_vacate() -> None:
+    """Issue #38: when the Exp 5 MILP fails, the AP keeps the full window."""
+    scheduler = FakeScheduler(status="Infeasible")
+    scheduler.hard_free_window = True  # type: ignore[attr-defined]
+    ap = APOrchestrator(FakeCTC(), scheduler)
+    outcome = ap.process_cycle(FGS, 0.0, 100.0, _zbeacon(60.0))
+    assert outcome.used_fallback
+    assert outcome.schedule.solver_status == VACATE_STATUS
+    width = outcome.schedule.t_free_end_ms - outcome.schedule.t_free_start_ms
+    assert width == pytest.approx(60.0)

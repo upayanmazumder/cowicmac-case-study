@@ -30,7 +30,7 @@ from typing import Protocol
 from cowic.ctc.channel import CTCMessage, MessageType
 from cowic.exceptions import ConfigurationError, CoWiCError, ProtocolError
 from cowic.models.frame_group import FrameGroup, SchedulingDecision
-from cowic.wifi.fallback import fallback_whitespace_expansion
+from cowic.wifi.fallback import fallback_whitespace_expansion, vacate_window
 from cowic.wifi.milp_scheduler import ScheduleResult
 
 # CTC payload keys shared with the ZigBee Coordinator.
@@ -260,7 +260,10 @@ class APOrchestrator:
             else:
                 if result.solver_status in self.optimal_statuses:
                     return result, False
-        fallback = fallback_whitespace_expansion(
+        # Exp 5's rigid scheduler never shortens the window (Issue #38).
+        rigid = bool(getattr(self.scheduler, "hard_free_window", False))
+        expand = vacate_window if rigid else fallback_whitespace_expansion
+        fallback = expand(
             frame_groups,
             t_start_ms,
             t_end_ms,

@@ -29,6 +29,8 @@ from cowic.wifi.milp_scheduler import ScheduleResult
 FALLBACK_STATUS = "fallback_whitespace"
 # The cycle (after carryover) is shorter than the sensing window.
 NO_SENSING_STATUS = "fallback_no_sensing"
+# Exp 5 fallback: full window reserved, overlapping WiFi vacated.
+VACATE_STATUS = "fallback_vacate"
 _SEARCH_STEPS = 40  # Bisection steps; resolution is cycle_length / 2**40.
 
 
@@ -109,6 +111,55 @@ def fallback_whitespace_expansion(
                 baseline_end=sense_only_end,
             )
 
+    sense_end = min(window_start + d_sensing_ms, window_end)
+    return ScheduleResult(
+        decisions=defer_around_window(
+            frame_groups, window_start, window_end, t_end_ms, channel_free_at
+        ),
+        t_free_start_ms=sense_end,
+        t_free_end_ms=window_end,
+        t_sense_start_ms=window_start,
+        t_sense_end_ms=sense_end,
+        solver_status=status,
+        solve_time_ms=(time.perf_counter() - began) * 1000.0,
+    )
+
+
+def vacate_window(
+    frame_groups: Sequence[FrameGroup],
+    t_start_ms: float,
+    t_end_ms: float,
+    d_free_ms: float,
+    d_sensing_ms: float = 0.0,
+    channel_free_at: float = -math.inf,
+) -> ScheduleResult:
+    """Exp 5 fallback: reserve the full request and vacate WiFi from it.
+
+    Exp 5 forcibly removes every WiFi FG that overlaps the reserved window
+    (Sec. 5.1), so the window is never shortened (Issue #38). It starts at
+    the largest whitespace, moved earlier if needed so it fits the cycle.
+    FGs that overlap it are deferred past it, or postponed if they then
+    miss their deadline or the cycle end. If the cycle is shorter than the
+    request, the result has ``NO_SENSING_STATUS`` and no window.
+    """
+    if d_free_ms < 0 or d_sensing_ms < 0:
+        raise ConfigurationError(
+            f"Window durations must be non-negative, got d_free={d_free_ms}, "
+            f"d_sensing={d_sensing_ms}"
+        )
+    began = time.perf_counter()
+    need = d_sensing_ms + d_free_ms
+    gaps = find_whitespaces(frame_groups, t_start_ms, t_end_ms)
+    largest_start = max(
+        gaps, key=lambda gap: gap[1] - gap[0], default=(t_start_ms, t_start_ms)
+    )[0]
+    window_start = min(largest_start, t_end_ms - need)
+    status = VACATE_STATUS
+    if window_start < t_start_ms:
+        window_start = window_end = t_start_ms
+        status = NO_SENSING_STATUS
+    else:
+        window_end = window_start + need
     sense_end = min(window_start + d_sensing_ms, window_end)
     return ScheduleResult(
         decisions=defer_around_window(

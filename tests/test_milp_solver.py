@@ -225,17 +225,17 @@ def test_schedule_overlaps_the_cheaper_fg_instead_of_moving_either() -> None:
 
 def test_schedule_stale_fg_does_not_corrupt_big_m() -> None:
     """A FG whose deadline sits far outside the horizon doesn't need a
-    looser Big-M than the model provides; this FG is genuinely infeasible
-    either way (its deadline has effectively already passed), but the
-    scheduler must still terminate cleanly and report it, rather than
-    silently mis-relaxing an unrelated constraint."""
+    looser Big-M than the model provides. It cannot be served (its deadline
+    has already passed), so since Issue #38 it is dropped and the cycle
+    still solves, instead of the whole model going Infeasible."""
     scheduler = MILPScheduler()
     stale = _fg(1, start=1010.0, duration=10.0, deadline=5.0, arrival=0.0)
     result = scheduler.schedule(
         [stale], d_free_ms=0.0, d_sensing_ms=0.0, t_start_ms=1000.0, t_end_ms=1100.0
     )
-    assert result.solver_status == "Infeasible"
+    assert result.solver_status == "Optimal"
     assert result.decisions[0].is_postponed is True
+    assert result.decisions[0].scheduled_start_ms == 1100.0
 
 
 def test_schedule_infeasible_problem_reports_all_postponed_with_no_window() -> None:
@@ -244,12 +244,12 @@ def test_schedule_infeasible_problem_reports_all_postponed_with_no_window() -> N
     the sensing window, breaking the hard Eq. 17 guarantee for a caller
     that only checks the schedule, not solver_status."""
     scheduler = MILPScheduler()
-    # Duration 50ms but only 20ms between arrival and deadline: impossible
-    # to schedule now, and the deadline has already passed by t_end_ms, so
-    # it cannot be postponed either.
-    impossible = _fg(1, start=10.0, duration=50.0, deadline=20.0, arrival=0.0)
+    # The free and sensing windows (80 + 30 ms) cannot fit a 100 ms cycle.
+    # A single unservable FG no longer causes this (Issue #38 drops it), so
+    # the windows are what make the model infeasible here.
+    fg = _fg(1, start=10.0, duration=5.0, deadline=500.0, arrival=0.0)
     result = scheduler.schedule(
-        [impossible], d_free_ms=0.0, d_sensing_ms=0.0, t_start_ms=0.0, t_end_ms=100.0
+        [fg], d_free_ms=80.0, d_sensing_ms=30.0, t_start_ms=0.0, t_end_ms=100.0
     )
     assert result.solver_status != "Optimal"
     assert result.t_free_start_ms == result.t_free_end_ms
@@ -263,12 +263,12 @@ def test_schedule_non_optimal_clamps_delay_for_future_fg() -> None:
     must report delay_ms=0.0 in the non-optimal path, not a negative
     value, matching the clamping already applied on the optimal path."""
     scheduler = MILPScheduler()
-    impossible = _fg(1, start=10.0, duration=50.0, deadline=20.0, arrival=0.0)
+    fg = _fg(1, start=10.0, duration=5.0, deadline=500.0, arrival=0.0)
     future_fg = _fg(2, start=500.0, duration=5.0, deadline=600.0, arrival=500.0)
     result = scheduler.schedule(
-        [impossible, future_fg],
-        d_free_ms=0.0,
-        d_sensing_ms=0.0,
+        [fg, future_fg],
+        d_free_ms=80.0,  # 80 + 30 ms of windows cannot fit the 100 ms cycle.
+        d_sensing_ms=30.0,
         t_start_ms=0.0,
         t_end_ms=100.0,
     )
@@ -365,3 +365,37 @@ def test_time_limited_solution_is_not_reported_as_optimal() -> None:
     )
     assert result.solver_status == UNPROVEN_STATUS
     assert result.solver_status != OPTIMAL_STATUS
+
+
+def test_unservable_fg_is_dropped_instead_of_failing_the_cycle() -> None:
+    """Issue #38: two 60 ms FGs that must both finish by 60 ms cannot share a
+    100 ms cycle, and neither can be postponed in time. The whole cycle used
+    to be Infeasible. Now exactly one is dropped and the other is kept."""
+    fgs = [
+        FrameGroup(1, 0.0, 60.0, 60.0, 0.0, False),
+        FrameGroup(2, 0.0, 60.0, 60.0, 0.0, False),
+    ]
+    result = MILPScheduler().schedule(fgs, 0.0, 0.0, 0.0, 100.0)
+    assert result.solver_status == OPTIMAL_STATUS
+    kept = [d for d in result.decisions if not d.is_postponed]
+    dropped = [d for d in result.decisions if d.is_postponed]
+    assert len(kept) == 1 and len(dropped) == 1
+    assert kept[0].scheduled_start_ms == pytest.approx(0.0)
+    assert dropped[0].scheduled_start_ms == 100.0  # Past its 60 ms deadline.
+
+
+def test_servable_fgs_are_never_dropped() -> None:
+    fgs = [
+        FrameGroup(1, 0.0, 30.0, 200.0, 0.0, False),
+        FrameGroup(2, 0.0, 30.0, 200.0, 10.0, False),
+    ]
+    result = MILPScheduler().schedule(fgs, 20.0, 0.0, 0.0, 100.0)
+    assert result.solver_status == OPTIMAL_STATUS
+    by_id = {fg.fg_id: fg for fg in fgs}
+    for d in result.decisions:
+        # Postponing is allowed (it can be the cheapest choice); dropping, i.e.
+        # postponing past the deadline, is not when a schedule can serve it.
+        if d.is_postponed:
+            assert d.scheduled_start_ms + by_id[d.fg_id].duration_ms <= (
+                by_id[d.fg_id].deadline_ms
+            )

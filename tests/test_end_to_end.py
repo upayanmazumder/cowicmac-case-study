@@ -651,7 +651,11 @@ def test_sensing_window_consumes_zigbee_grant_and_contains_zbeacon(
                 records, engine.last_zbeacon_windows, strict=True
             )
         )
-    assert gains[1] < gains[0] - 0.05
+    # The free and sensing windows are disjoint (Eq. 3/13), so a longer
+    # sensing window costs WiFi airtime, not ZigBee airtime. It must not
+    # raise G_z. (A strict drop here only came from a whole-cycle fallback
+    # that shrank the free window; Issue #38 removed that.)
+    assert gains[1] <= gains[0]
 
 
 def test_pending_packets_derived_from_d_free_unless_overridden(
@@ -823,3 +827,42 @@ def test_sensing_credit_is_the_window_not_the_beacon(short_trace: Path) -> None:
     assert metrics.spectrum_utilization == pytest.approx(
         min(1.0, base + windows / 2000.0)
     )
+
+
+@pytest.fixture
+def congested_trace(tmp_path: Path) -> Path:
+    """Traffic I, 5 s, seed 42: cycle 1000 used to be Infeasible (Issue #38)."""
+    trace = tmp_path / "traffic1_5s.parquet"
+    generate_trace("configs/base_traffic1.yaml", 5.0, trace, seed=42)
+    return trace
+
+
+def test_exp4_congested_cycle_needs_no_fallback(
+    congested_trace: Path, tmp_path: Path
+) -> None:
+    """Issue #38 acceptance: Exp 4, Traffic I, D_free = 31 ms."""
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp4_cowic_full.yaml"), trace_dir=tmp_path
+    )
+    _, summary, metrics = _run_measured(
+        replace(config, duration_s=5.0, d_free_ms=31.0, wifi_trace_path=congested_trace)
+    )
+    assert summary["fallback_cycles"] == 0.0
+    assert summary["dropped_frame_groups"] == 0.0
+    assert metrics.wifi_drop_rate == 0.0
+
+
+def test_exp5_keeps_the_full_window_every_cycle(
+    congested_trace: Path, tmp_path: Path
+) -> None:
+    """Issue #38 acceptance: Exp 5 keeps t_free_end - t_free_start == D_free."""
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp5_rigid_vacate.yaml"), trace_dir=tmp_path
+    )
+    engine = SimulationEngine(
+        replace(config, duration_s=5.0, d_free_ms=62.0, wifi_trace_path=congested_trace)
+    )
+    engine.run()
+    assert engine.last_free_windows
+    for start, end in engine.last_free_windows:
+        assert end - start == pytest.approx(62.0)

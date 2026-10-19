@@ -22,7 +22,7 @@ extracted from the source PDF is not usable as-is.
 """
 
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -89,6 +89,24 @@ def _big_m(
     )
     stale_extra = max(0.0, deadline_gap, arrival_gap, origin_gap)
     return horizon_ms + max_duration + max(d_free_ms, d_sensing_ms) + stale_extra + 1.0
+
+
+def _drop_cost(
+    frame_groups: Sequence[FrameGroup],
+    big_m: float,
+    gamma: float,
+    lambda_weight: float,
+    postponement_costs: Iterable[float],
+) -> float:
+    """Cost of dropping one FG: more than all other objective terms together.
+
+    Each FG adds at most ``(1 + gamma) * d_k`` overlap cost, ``lambda * M``
+    deviation cost and ``mu_k`` postponement cost. Pricing one drop above the
+    sum makes the solver minimize the number of drops first.
+    """
+    overlap = sum((1.0 + gamma) * fg.duration_ms for fg in frame_groups)
+    deviation = lambda_weight * big_m * len(frame_groups)
+    return 1.0 + overlap + deviation + sum(postponement_costs)
 
 
 def _postponement_cost(fg: FrameGroup, t_end_ms: float, mu_base: float) -> float:
@@ -227,12 +245,31 @@ class MILPScheduler:
             fg.fg_id: _postponement_cost(fg, t_end_ms, self.mu_base)
             for fg in frame_groups
         }
+        # Drop binaries (Issue #38). Eq. 14 is a conjunction over all FGs, so
+        # one FG that can neither fit this cycle nor be postponed in time made
+        # the whole cycle infeasible. D_k = 1 lets that FG go (it is reported
+        # postponed past its deadline, i.e. dropped) at a cost above every
+        # other term combined, so the solver drops an FG only when no
+        # schedule can serve it. Hard mode already vacates without a
+        # deadline check, so it needs no drop variable.
+        drop = (
+            {}
+            if self.hard_free_window
+            else {
+                fg.fg_id: pulp.LpVariable(f"D_{fg.fg_id}", cat="Binary")
+                for fg in frame_groups
+            }
+        )
+        drop_cost = _drop_cost(
+            frame_groups, big_m, self.gamma, self.lambda_weight, mu.values()
+        )
         prob += (
             pulp.lpSum(z_free[fg.fg_id] * fg.duration_ms for fg in frame_groups)
             + self.gamma
             * pulp.lpSum(z_sense[fg.fg_id] * fg.duration_ms for fg in frame_groups)
             + self.lambda_weight * pulp.lpSum(y.values())
             + pulp.lpSum(mu[fg.fg_id] * p[fg.fg_id] for fg in frame_groups)
+            + drop_cost * pulp.lpSum(drop.values())
         )
 
         # Window timing constraints (Eq. 3/13): the free and sensing
@@ -265,7 +302,10 @@ class MILPScheduler:
                 # Soft mode postpones only FGs that can still meet their
                 # deadline next cycle. Hard mode must vacate the window at
                 # any cost, so a vacated FG may miss its deadline (a drop).
-                prob += t_end_ms + d <= fg.deadline_ms + big_m * (1 - p[fid])
+                prob += t_end_ms + d <= fg.deadline_ms + big_m * (
+                    1 - p[fid] + drop[fid]
+                )
+                prob += drop[fid] <= p[fid]  # A dropped FG is not sent now.
             prob += s + d <= t_end_ms + big_m * p[fid]
 
             # Overlap avoidance (Eq. 16/17 intent, corrected disjunctive

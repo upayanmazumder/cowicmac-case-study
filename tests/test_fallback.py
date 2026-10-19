@@ -8,7 +8,9 @@ from cowic.wifi.baselines import find_whitespaces
 from cowic.wifi.fallback import (
     FALLBACK_STATUS,
     NO_SENSING_STATUS,
+    VACATE_STATUS,
     fallback_whitespace_expansion,
+    vacate_window,
 )
 from traces.playback import frame_groups_from_frame, iter_cycles
 from traces.synthetic_generator import build_trace, load_profile
@@ -216,3 +218,25 @@ def test_invalid_inputs() -> None:
         fallback_whitespace_expansion(FGS, 0.0, 100.0, 10.0, -1.0)
     with pytest.raises(ConfigurationError):
         fallback_whitespace_expansion(FGS, 100.0, 0.0, 10.0)
+
+
+def test_vacate_window_never_shrinks_the_reservation() -> None:
+    """Issue #38: Exp 5 removes WiFi from the window; it never shrinks it."""
+    fgs = [_fg(1, 0.0, 30.0, bound=0.0), _fg(2, 35.0, 60.0, bound=0.0)]
+    result = vacate_window(fgs, 0.0, 100.0, 40.0)
+    assert result.solver_status == VACATE_STATUS
+    assert result.t_free_end_ms - result.t_free_start_ms == pytest.approx(40.0)
+    by_id = {fg.fg_id: fg for fg in fgs}
+    for d in result.decisions:
+        if d.is_postponed:
+            continue
+        end = d.scheduled_start_ms + by_id[d.fg_id].duration_ms
+        assert end <= result.t_free_start_ms or d.scheduled_start_ms >= (
+            result.t_free_end_ms
+        )
+
+
+def test_vacate_window_reports_a_cycle_too_short() -> None:
+    result = vacate_window([], 0.0, 30.0, 40.0)
+    assert result.solver_status == NO_SENSING_STATUS
+    assert result.t_free_end_ms == result.t_free_start_ms
