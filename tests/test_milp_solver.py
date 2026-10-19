@@ -368,15 +368,15 @@ def test_time_limited_solution_is_not_reported_as_optimal() -> None:
     assert result.solver_status != OPTIMAL_STATUS
 
 
-def test_unproven_solution_with_drops_is_not_accepted() -> None:
+@pytest.mark.parametrize("hard", [False, True])
+def test_unproven_solution_with_drops_is_not_accepted(hard: bool) -> None:
     """A time-limited incumbent cannot prove its drops are unavoidable."""
     fgs = [
         FrameGroup(1, 0.0, 60.0, 60.0, 0.0, False),
         FrameGroup(2, 0.0, 60.0, 60.0, 0.0, False),
     ]
-    result = MILPScheduler(solver=_TimeLimitedSolver()).schedule(
-        fgs, 0.0, 0.0, 0.0, 100.0
-    )
+    scheduler = MILPScheduler(solver=_TimeLimitedSolver(), hard_free_window=hard)
+    result = scheduler.schedule(fgs, 0.0, 0.0, 0.0, 100.0)
     assert result.solver_status == UNPROVEN_DROP_STATUS
     assert result.t_free_start_ms == result.t_free_end_ms
 

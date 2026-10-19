@@ -357,10 +357,19 @@ class MILPScheduler:
         status = pulp.LpStatus[prob.status]
         if status == OPTIMAL_STATUS and prob.sol_status != pulp.LpSolutionOptimal:
             status = UNPROVEN_STATUS
-        if status == UNPROVEN_STATUS and any(
+        unproven_drops = any(
             variable.value() is not None and variable.value() > 0.5
             for variable in drop.values()
-        ):
+        ) or (
+            self.hard_free_window
+            and any(
+                p[fg.fg_id].value() is not None
+                and p[fg.fg_id].value() > 0.5
+                and t_end_ms + fg.duration_ms > fg.deadline_ms
+                for fg in frame_groups
+            )
+        )
+        if status == UNPROVEN_STATUS and unproven_drops:
             # A feasible incumbent may drop FGs that a better schedule can
             # serve. Only a proven optimum establishes the minimum drop count.
             return self._no_solution_result(
