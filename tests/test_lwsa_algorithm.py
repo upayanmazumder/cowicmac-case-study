@@ -414,3 +414,22 @@ def test_zc_process_wbeacon_rejects_nonnumeric_window_boundary() -> None:
     )
     with pytest.raises(ProtocolError):
         zc.process_wbeacon(bad_wbeacon, residual_wifi_fragments=[])
+
+
+def test_beacon2_airtime_is_kept_clear_of_residual_wifi() -> None:
+    """Beacon2 opens the slot after Beacon1. A WiFi fragment that ends inside
+    Beacon2 (before the first CAP attempt) must not be chosen over."""
+    from cowic.zigbee.lwsa_adapter import BEACON_DURATION_MS
+
+    adapter = LWSAAdapter()
+    clean = adapter.adapt_superframe(0.0, 62.0, [])
+    assert clean.beacon2_offset_ms is not None
+    b2 = clean.beacon2_offset_ms
+    # Inside Beacon2 only: clear of the Beacon1 slot and of the first CAP
+    # attempt, which starts two backoff slots (0.64 ms) after Beacon2.
+    fragment = (b2 + 0.05, b2 + BEACON_DURATION_MS - 0.05)
+    chosen = adapter.adapt_superframe(0.0, 62.0, [fragment])
+    assert chosen.beacon2_offset_ms is not None
+    start = chosen.beacon2_offset_ms
+    end = start + min(BEACON_DURATION_MS, chosen.slot_duration_ms)
+    assert end <= fragment[0] or start >= fragment[1]

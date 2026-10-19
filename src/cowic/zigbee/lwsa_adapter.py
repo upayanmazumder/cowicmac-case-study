@@ -48,6 +48,7 @@ TURNAROUND_TIME_MS = SYMBOL_DURATION_MS * 12  # aTurnaroundTime: 12 symbols
 ACK_DURATION_MS = SYMBOL_DURATION_MS * 22  # ACK frame: 22 symbols
 MAX_PACKET_DURATION_MS = SYMBOL_DURATION_MS * 2 * (127 + 6)  # PSDU + SHR + PHR
 PHY_HEADER_DURATION_MS = SYMBOL_DURATION_MS * 2 * 6  # SHR (5 B) + PHR (1 B)
+BEACON_DURATION_MS = SYMBOL_DURATION_MS * 30  # Beacon1/Beacon2 airtime
 
 MAX_CFP_SLOTS = 7  # 0 <= j <= 7 (Eq. 10)
 MAX_ACTIVE_SLOTS = 15  # i + j <= 15 (Eq. 10)
@@ -276,6 +277,20 @@ class LWSAAdapter:
         ):
             return None
         cap_region_start_ms = beacon_offset_ms + slot_duration_ms
+        # Beacon2 opens the slot after Beacon1 (Fig. 2b). The first CAP attempt
+        # starts two backoff slots later, so Eq. 9 alone does not see WiFi
+        # that ends inside Beacon2. Require its airtime to be clear too.
+        if (
+            _count_clear_slots(
+                1,
+                cap_region_start_ms,
+                slot_duration_ms,
+                min(BEACON_DURATION_MS, slot_duration_ms),
+                residual_wifi_fragments,
+            )
+            == 0
+        ):
+            return None
         best: _Candidate | None = None
         for j in range(0, min(MAX_CFP_SLOTS, max_active) + 1):
             max_i = min(max_active - j, MAX_ACTIVE_SLOTS - j)

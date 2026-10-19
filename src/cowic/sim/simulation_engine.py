@@ -68,8 +68,8 @@ from cowic.wifi.milp_scheduler import (
 from cowic.zigbee.coordinator import ZCState, ZigBeeCoordinator
 from cowic.zigbee.lwsa_adapter import (
     BACKOFF_SLOT_DURATION_MS,
+    BEACON_DURATION_MS,
     PHY_HEADER_DURATION_MS,
-    SYMBOL_DURATION_MS,
     LWSAAdapter,
     _min_cap_interval_ms,
     _packet_duration_ms,
@@ -99,7 +99,7 @@ TRACE_DATA_DIR = (
 _FIXED_CAP_SLOTS = 8
 _FIXED_CFP_SLOTS = 7
 _FIXED_SLOT_DURATION_MS = 0.96 * 4  # BASE_SLOT_DURATION_MS * 2**2
-_ZIGBEE_BEACON_DURATION_MS = SYMBOL_DURATION_MS * 30
+_ZIGBEE_BEACON_DURATION_MS = BEACON_DURATION_MS
 
 
 @dataclass(frozen=True)
