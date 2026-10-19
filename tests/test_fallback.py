@@ -247,6 +247,17 @@ def test_vacate_window_never_shrinks_the_reservation() -> None:
         )
 
 
+def test_vacate_window_uses_positions_after_carryover() -> None:
+    """A shifted FG finishes at 65 ms, leaving room for a 30 ms grant."""
+    fg = FrameGroup(1, 0.0, 45.0, 100.0, 0.0, False)
+    result = vacate_window([fg], 0.0, 100.0, 30.0, channel_free_at=20.0)
+    assert result.solver_status == VACATE_STATUS
+    assert result.decisions[0].scheduled_start_ms == 20.0
+    assert not result.decisions[0].is_postponed
+    assert result.t_free_start_ms >= 65.0
+    assert result.t_free_end_ms - result.t_free_start_ms == 30.0
+
+
 def test_vacate_window_preserves_airtime_when_request_exceeds_cycle() -> None:
     fg = _fg(1, 0.0, 20.0, bound=10.0)
     result = vacate_window([fg], 0.0, 30.0, 40.0, 10.0)

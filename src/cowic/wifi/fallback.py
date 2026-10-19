@@ -20,6 +20,7 @@ the sensing window, the result has ``NO_SENSING_STATUS`` and no window.
 import math
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 
 from cowic.exceptions import ConfigurationError
 from cowic.models.frame_group import FrameGroup
@@ -153,7 +154,24 @@ def vacate_window(
     began = time.perf_counter()
     t_start_ms = max(t_start_ms, min(channel_free_at, t_end_ms))
     need = d_sensing_ms + d_free_ms
-    gaps = find_whitespaces(frame_groups, t_start_ms, t_end_ms)
+    # Estimate whitespace after carryover and ordinary WiFi serialization.
+    # Original FG positions can suggest a window that needlessly postpones
+    # a shifted FG, even though a clean window exists later in the cycle.
+    by_id = {fg.fg_id: fg for fg in frame_groups}
+    baseline = defer_around_window(
+        frame_groups, t_start_ms, t_start_ms, t_end_ms, channel_free_at
+    )
+    placed = []
+    for decision in baseline:
+        if decision.is_postponed:
+            continue
+        fg = by_id[decision.fg_id]
+        placed.append(
+            replace(fg, original_start_ms=decision.scheduled_start_ms)
+            if decision.scheduled_start_ms != fg.original_start_ms
+            else fg
+        )
+    gaps = find_whitespaces(placed, t_start_ms, t_end_ms)
     largest_start = max(
         gaps, key=lambda gap: gap[1] - gap[0], default=(t_start_ms, t_start_ms)
     )[0]
