@@ -219,8 +219,8 @@ Hypothesis mapping:
 
 | Hypothesis | Claim                           | Simulation support (reference run, Traffic I, $T_{ZB}$ = 1000 ms)                              |
 | ---------- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| H1         | $G_z \ge 90\%$ under heavy load | Exp 4 holds at 31 ms (0.942), not at 62, 93 and 123 ms (0.873, 0.795, 0.609)                |
-| H2         | $PDR_w = 0$                     | Not met: Exp 4 loses 1.3–4.1 % (postponement limit, see below)                                 |
+| H1         | $G_z \ge 90\%$ under heavy load | Exp 4 holds at 31 ms (0.942), not at 62, 93 and 123 ms (0.870, 0.800, 0.626)                |
+| H2         | $PDR_w = 0$                     | Not met: Exp 4 loses 1.3–4.0 % (postponement limit, see below)                                 |
 | H3         | Compare variant configurations  | Exp 5 changes the scheduler and ZigBee superframe. Exp 6 removes sensing and uses one-way CTC. |
 
 ### Deviations from the base paper
@@ -230,16 +230,16 @@ The table compares the paper values with `results/benchmark_results.csv`. This C
 | Exp   | Metric  | $D_{\text{free}}$ (ms) | Paper (Sec. 5.3.1) | Simulated   | Result |
 | ----- | ------- | ---------------------- | ------------------ | ----------- | ------ |
 | Exp 4 | $G_z$   | 31                     | > 0.986            | 0.942       | FAIL   |
-| Exp 4 | $G_z$   | 62                     | 0.963              | 0.873       | FAIL   |
-| Exp 4 | $G_z$   | 123                    | 0.934–0.947        | 0.609       | FAIL   |
-| Exp 4 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.027, 0.041 | FAIL |
+| Exp 4 | $G_z$   | 62                     | 0.963              | 0.870       | FAIL   |
+| Exp 4 | $G_z$   | 123                    | 0.934–0.947        | 0.626       | FAIL   |
+| Exp 4 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.027, 0.040 | FAIL |
 | Exp 5 | $G_z$   | 31, 62, 123            | 1.000              | 1.000, 1.000, 1.000 | PASS |
 | Exp 5 | $PDR_w$ | 31                     | < 0.01             | 0.013       | PASS   |
-| Exp 5 | $PDR_w$ | 123                    | 0.028              | 0.082       | FAIL   |
+| Exp 5 | $PDR_w$ | 123                    | 0.028              | 0.081       | FAIL   |
 | Exp 6 | $G_z$   | 31                     | > 0.986            | 0.967       | PASS   |
-| Exp 6 | $G_z$   | 62                     | 0.963              | 0.936       | FAIL   |
-| Exp 6 | $G_z$   | 123                    | 0.934–0.947        | 0.655       | FAIL   |
-| Exp 6 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.028, 0.045 | FAIL |
+| Exp 6 | $G_z$   | 62                     | 0.963              | 0.937       | FAIL   |
+| Exp 6 | $G_z$   | 123                    | 0.934–0.947        | 0.666       | FAIL   |
+| Exp 6 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.027, 0.045 | FAIL |
 
 Result: FAIL. 5 of 17 points pass.
 
@@ -253,7 +253,7 @@ Other paper values from the same run:
 | Exp 2 $PDR_w$, Traffic I, 123 ms          | 7.6 %        | 0.0 %     |
 | Exp 1 $G_z$, Traffic III, 31 / 123 ms     | 54.3 / 36.1 % | 68.3 / 68.3 % |
 | Exp 2 $G_z$ / $PDR_w$, Traffic III, 123 ms | 93.9 / 1.4 % | 99.4 / 0.0 % |
-| Exp 4 $G_z$, Traffic I, $D_{\text{sensing}}$ 10 → 100 ms (paper: $D_{\text{free}}$ not stated; sim: 31 ms) | 90.5 → 48.0 % | 94.2 → 63.1 % |
+| Exp 4 $G_z$, Traffic I, $D_{\text{sensing}}$ 10 → 100 ms (paper: $D_{\text{free}}$ not stated; sim: 31 ms) | 90.5 → 48.0 % | 94.2 → 61.9 % |
 
 Causes (`reviews/project_document.md` §7, "Fidelity at high load"):
 

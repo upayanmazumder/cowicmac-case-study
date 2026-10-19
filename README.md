@@ -128,9 +128,9 @@ Main results on Traffic I at $T_{ZB}$ = 1000 ms (Fig. 11):
 | Exp   | $G_z$ 31 / 62 / 123 ms | $PDR_w$ 31 / 62 / 123 ms | Paper $G_z$ / $PDR_w$             |
 | ----- | ---------------------- | ------------------------ | --------------------------------- |
 | Exp 1 | 0.132 / 0.116 / 0.116  | 11.4 / 14.0 / 14.0 %     | 1.3 % at 31 ms / 9.7 % at 123 ms  |
-| Exp 4 | 0.942 / 0.873 / 0.609  | 1.3 / 2.7 / 4.1 %        | > 98.6 / 96.3 / 93.4–94.7 % / 0 % |
-| Exp 5 | 1.000 / 1.000 / 1.000  | 1.3 / 3.4 / 8.2 %        | 100 % / < 1 % at 31, 2.8 % at 123 |
-| Exp 6 | 0.967 / 0.936 / 0.655  | 1.3 / 2.8 / 4.5 %        | as Exp 4                          |
+| Exp 4 | 0.942 / 0.870 / 0.626  | 1.3 / 2.7 / 4.0 %        | > 98.6 / 96.3 / 93.4–94.7 % / 0 % |
+| Exp 5 | 1.000 / 1.000 / 1.000  | 1.3 / 3.4 / 8.1 %        | 100 % / < 1 % at 31, 2.8 % at 123 |
+| Exp 6 | 0.967 / 0.937 / 0.666  | 1.3 / 2.7 / 4.5 %        | as Exp 4                          |
 
 The acceptance check passes 5 of 17 paper points. Review 3 §9 lists each deviation. `reviews/project_document.md` §7 explains the causes: Traffic I at 123 ms needs about 101 % of each cycle, and the paper gives no MILP weights. The qualitative trends of Figs. 15–17 hold: $G_z$ falls as WiFi occupancy grows, and a longer sensing window lowers $G_z$ on Traffic I but not on Traffic III.
 
