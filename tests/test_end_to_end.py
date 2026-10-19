@@ -724,8 +724,9 @@ def test_milp_accepts_unproven_solutions_and_reports_them(
     assert "milp_unproven_cycles" in result
 
 
-def test_run_summary_reports_missed_sensing_windows(short_trace: Path) -> None:
-    """Issue #48: a cycle with less than D_sensing of sensing is counted."""
-    result = SimulationEngine(replace(_exp4_config(short_trace), duration_s=2.0)).run()
-    assert "sensing_missed_cycles" in result
-    assert 0.0 <= result["sensing_missed_cycles"] <= result["cycles_run"]
+def test_run_summary_counts_cycles_shorter_than_sensing(short_trace: Path) -> None:
+    """Every 5 ms cycle misses the required 10 ms sensing reservation."""
+    config = replace(_exp4_config(short_trace), duration_s=0.2, zigbee_period_ms=5.0)
+    result = SimulationEngine(config).run()
+    assert result["cycles_run"] == 40.0
+    assert result["sensing_missed_cycles"] == 40.0

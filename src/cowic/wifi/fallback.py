@@ -73,6 +73,9 @@ def fallback_whitespace_expansion(
             f"d_sensing={d_sensing_ms}"
         )
     began = time.perf_counter()
+    # A preceding FG can remain on air after the nominal cycle start.
+    # Never announce a window within its occupied interval.
+    t_start_ms = max(t_start_ms, min(channel_free_at, t_end_ms))
     gaps = find_whitespaces(frame_groups, t_start_ms, t_end_ms)
     need = d_sensing_ms + d_free_ms
 
