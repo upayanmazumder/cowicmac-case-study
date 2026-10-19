@@ -43,9 +43,15 @@ env/
 htmlcov/
 coverage.xml
 
-# Experiment outputs
-results/
-figures/
+# Experiment outputs. The reference sweep CSV and its figures are tracked
+# (README "Evaluation Results" states their provenance).
+results/*
+!results/benchmark_results.csv
+figures/*
+!figures/*.png
+!figures/data/
+figures/data/*
+!figures/data/*.csv
 traces/data/*.parquet
 traces/data/*.csv
 !traces/data/.gitkeep

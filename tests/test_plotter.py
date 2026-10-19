@@ -1,4 +1,4 @@
-"""Tests for ResultPlotter (base paper Figs. 11, 14, 16)."""
+"""Tests for ResultPlotter (base paper Figs. 11 to 17)."""
 
 from pathlib import Path
 
@@ -8,6 +8,8 @@ import pytest
 from cowic.analysis.plotter import (
     MAIN_SWEEP,
     METRIC_COLUMNS,
+    OCCUPANCY_COLUMN,
+    OCCUPANCY_SWEEP,
     SENSING_SWEEP,
     ResultPlotter,
     average_seeds,
@@ -224,9 +226,93 @@ def test_average_seeds_collapses_seed_rows() -> None:
 def test_write_figures_draws_fig11_and_fig16(tmp_path: Path) -> None:
     paths = write_figures(sweep_results(), tmp_path)
     names = sorted(p.name for p in paths)
-    assert names == ["fig11_Traffic_I_tzb1000.png", "fig16_sensing.png"]
+    assert names == [
+        "fig11_Traffic_I_tzb1000.png",
+        "fig16_sensing_Traffic_I_tzb1000.png",
+    ]
     assert all(p.exists() and p.stat().st_size > 0 for p in paths)
-    assert (tmp_path / "data" / "fig16_sensing.csv").exists()
+    assert (tmp_path / "data" / "fig16_sensing_Traffic_I_tzb1000.csv").exists()
+
+
+def _all_figure_results() -> pd.DataFrame:
+    """Sweep rows for every figure stage: main, occupancy and sensing."""
+    base = sweep_results()
+    rows = [row for row in base.to_dict("records") if row["sweep"] == MAIN_SWEEP]
+    template = rows[0]
+    for traffic, period in (
+        ("Traffic_I", 2000.0),
+        ("Traffic_III", 1000.0),
+        ("Traffic_II", 1000.0),
+    ):
+        rows.append(
+            {**template, "traffic_profile": traffic, "zigbee_period_ms": period}
+        )
+    for occupancy, traffic in (
+        (0.9, "Traffic_I"),
+        (0.7, "Traffic_II"),
+        (0.3, "Traffic_III"),
+        (0.15, "Traffic_IV"),
+    ):
+        for exp in ("Exp_2", "Exp_4"):
+            rows.append(
+                {
+                    **template,
+                    "sweep": OCCUPANCY_SWEEP,
+                    "experiment_id": exp,
+                    "traffic_profile": traffic,
+                    "d_free_ms": 63.0,
+                    OCCUPANCY_COLUMN: occupancy,
+                }
+            )
+    for traffic in ("Traffic_I", "Traffic_III"):
+        for window in (10.0, 50.0):
+            rows.append(
+                {
+                    **template,
+                    "sweep": SENSING_SWEEP,
+                    "experiment_id": "Exp_4",
+                    "traffic_profile": traffic,
+                    "d_sensing_ms": window,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_write_figures_names_every_paper_figure(tmp_path: Path) -> None:
+    paths = write_figures(_all_figure_results(), tmp_path)
+    assert sorted(p.name for p in paths) == [
+        "dfree_Traffic_II_tzb1000.png",
+        "fig11_Traffic_I_tzb1000.png",
+        "fig12_Traffic_I_tzb2000.png",
+        "fig14_Traffic_III_tzb1000.png",
+        "fig15_occupancy_tzb1000_dfree63.png",
+        "fig16_sensing_Traffic_I_tzb1000.png",
+        "fig17_sensing_Traffic_III_tzb1000.png",
+    ]
+    assert all(p.exists() and p.stat().st_size > 0 for p in paths)
+    fig15 = pd.read_csv(tmp_path / "data" / "fig15_occupancy_tzb1000_dfree63.csv")
+    assert len(fig15) == 8  # 2 experiments x 4 traffic profiles.
+    assert sorted(fig15[OCCUPANCY_COLUMN].unique()) == [0.15, 0.3, 0.7, 0.9]
+
+
+def test_write_figures_rejects_occupancy_rows_without_occupancy(
+    tmp_path: Path,
+) -> None:
+    results = _all_figure_results()
+    results.loc[results["sweep"] == OCCUPANCY_SWEEP, OCCUPANCY_COLUMN] = None
+    with pytest.raises(ConfigurationError, match=OCCUPANCY_COLUMN):
+        write_figures(results, tmp_path)
+
+
+def test_plot_occupancy_sweep(tmp_path: Path) -> None:
+    rows = _benchmark_rows(["Exp_2", "Exp_4"], OCCUPANCY_COLUMN, [0.2, 0.5, 0.9])
+    csv_path = tmp_path / "occupancy.csv"
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    path = ResultPlotter(tmp_path / "figures").plot_occupancy_sweep(
+        csv_path, title="Fig. 15", filename="fig15_occupancy"
+    )
+    assert path.name == "fig15_occupancy.png"
+    assert path.stat().st_size > 0
 
 
 def test_write_figures_rejects_rows_without_scenario_columns(tmp_path: Path) -> None:

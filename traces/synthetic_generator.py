@@ -5,7 +5,11 @@ Without those captures, this module synthesises traces that reproduce the
 per-profile statistics reported in Table 5:
 
 * FG durations and natural whitespaces are drawn from exponential
-  distributions with the Table 5 means.
+  distributions with the Table 5 means. The whitespace tail therefore follows
+  ``P(W > t) = exp(-t / mean)``. This tail does not match the Sec. 5.2 Fig. 9
+  values, and no distribution with the Table 5 mean of Traffic I can match
+  them (Markov bound). ``reviews/project_document.md`` gives the proof and
+  the chosen reading.
 * Every FG receives a postponement bound from ``postpone_bounds_ms``
   (50/100/150/200 ms). QoS-sensitive FGs get the tightest bound, non-real-time
   FGs get one of the two loosest bounds, and the remainder get the second
@@ -51,6 +55,7 @@ TRACE_COLUMNS: list[str] = [
 ]
 
 DEFAULT_DURATION_S = 600.0  # The paper collects four 10-minute traces.
+WHITESPACE_CCDF_THRESHOLD_MS = 10.0  # Sec. 5.2 reads Fig. 9 at 10 ms.
 
 
 @dataclass(frozen=True)
@@ -209,7 +214,11 @@ def build_trace(
 
 
 def summarize_trace(trace: pd.DataFrame, duration_s: float) -> dict[str, float]:
-    """Compute the Table 5 statistics of a trace, for validation."""
+    """Compute the Table 5 statistics of a trace, for validation.
+
+    ``whitespace_ccdf_10ms`` is the fraction of natural whitespaces longer than
+    ``WHITESPACE_CCDF_THRESHOLD_MS``, the Fig. 9 statistic of Sec. 5.2.
+    """
     starts = trace["original_start_ms"].to_numpy()
     ends = starts + trace["duration_ms"].to_numpy()
     gaps = starts - np.concatenate([[0.0], ends[:-1]])
@@ -218,6 +227,7 @@ def summarize_trace(trace: pd.DataFrame, duration_s: float) -> dict[str, float]:
         "frame_groups": float(len(trace)),
         "avg_fg_duration_ms": float(trace["duration_ms"].mean()),
         "avg_whitespace_ms": float(gaps.mean()),
+        "whitespace_ccdf_10ms": float((gaps > WHITESPACE_CCDF_THRESHOLD_MS).mean()),
         "qos_sensitive_ratio": float(trace["qos_sensitive"].mean()),
         "non_realtime_ratio": float((trace["delay_bound_ms"] > 100.0).mean()),
         "avg_delay_bound_ms": float(trace["delay_bound_ms"].mean()),

@@ -103,7 +103,7 @@ def test_analysis_cli_redraws_figures_from_csv(
     assert code == 0
     assert sorted(p.name for p in out.glob("*.png")) == [
         "fig11_Traffic_I_tzb1000.png",
-        "fig16_sensing.png",
+        "fig16_sensing_Traffic_I_tzb1000.png",
     ]
     assert "Wrote" in capsys.readouterr().out
 

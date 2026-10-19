@@ -1,5 +1,5 @@
 name: "Traffic_II_Medium_High_Load"
-description: "Busy WiFi traffic profile with roughly 70 percent channel occupancy"
+description: "Busy WiFi traffic profile with roughly 70 percent channel occupancy (23.7 ms FGs, 9.2 ms whitespace). Uses the Table 5 values. Exponential whitespaces give P(W > 10 ms) = exp(-10/9.2) = 33.7 percent. Sec. 5.2 (Fig. 9) gives 65.9 percent. This value is below the Markov limit of 9.2/10 = 92 percent, but the generator keeps the exponential tail because Traffic I can not match Fig. 9. See reviews/project_document.md section 3.1."
 avg_fg_duration_ms: 23.7
 avg_whitespace_ms: 9.2
 qos_sensitive_ratio: 0.107

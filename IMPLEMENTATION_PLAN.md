@@ -99,7 +99,7 @@ cowicmac-case-study/
 │   ├── playback.py                    # Trace loading and per-cycle replay
 │   └── data/                          # Generated traces (.parquet, not committed)
 ├── scripts/
-│   ├── run_benchmark_sweep.py         # Exp 1-6 sweep over D_free, T_ZB, traffic, seed
+│   ├── run_benchmark_sweep.py         # Exp 1-6 sweep: D_free, T_ZB, traffic, occupancy, D_sensing
 │   └── build_docs.py                  # Builds the review PDFs
 ├── src/cowic/
 │   ├── exceptions.py                  # CoWiCError hierarchy
@@ -123,7 +123,7 @@ cowicmac-case-study/
 │   └── analysis/
 │       ├── __main__.py                # `python -m cowic.analysis --results-csv ...`
 │       ├── metrics.py                 # G_z, PDR_w, U_eff, Jitter, Moved FGs, Max Delay
-│       └── plotter.py                 # Figs. 11-14 and 16 (Figs. 15 and 17: #45)
+│       └── plotter.py                 # Figs. 11-17
 └── tests/                             # 13 test modules, one per component plus
                                        # end-to-end, sweep, and CLI tests
 ```
@@ -154,13 +154,16 @@ with the deadline-aware postponement cost of Eq. 2,
 Subject to:
 
 0. Window placement (Eq. 3/13): $T^\text{end}_\text{free} = T^\text{start}_\text{free} + D_\text{free}$, $T^\text{end}_\text{sensing} = T^\text{start}_\text{sensing} + D_\text{sensing}$, both inside $[T_\text{start}, T_\text{end}]$, and non-overlapping through the binary $b_\text{ws}$: $T^\text{end}_\text{free} \le T^\text{start}_\text{sensing} + M(1 - b_\text{ws})$ and $T^\text{end}_\text{sensing} \le T^\text{start}_\text{free} + M b_\text{ws}$.
-1. $y_k \ge s'_k - s_k$, $y_k \ge 0$ (Delay penalty).
+1. $y_k \ge s'_k - s_k$ and $y_k \ge s_k - s'_k$, $y_k \ge 0$ (deviation penalty $\lambda |s'_k - s_k|$ of Eq. 1). A postponed FG has no deviation cost, because $\mu_k$ already prices it.
 2. $a_k \le s'_k + M P_k$ (Causality).
 3. $s'_k + d_k \le e_k + M P_k$ and $s'_k + d_k \le T_\text{end} + M P_k$ (Deadlines & cycle bounds).
-4. $T_\text{end} + d_k \le e_k + M (1 - P_k)$ (Feasibility of postponed FGs in next cycle).
-5. Inter-FG conflict avoidance via Big-M ordering variables $b_{kj}$.
+4. $T_\text{end} + d_k \le e_k + M (1 - P_k + D_k)$ (Feasibility of postponed FGs in next cycle). The drop binary $D_k \le P_k$ relaxes this test for an FG that no schedule can serve. One drop costs more than all other objective terms together.
+4a. Joint feasibility of the postponed set. Sec. 4.3 states that a postponed FG "must remain schedulable in the next cycle". All postponed FGs compete for the start of that cycle, so the code also requires earliest-deadline-first feasibility from $T_\text{end}$: for each FG $k$, $T_\text{end} + \sum_{j:\ (e_j, j) \le (e_k, k)} d_j (P_j - D_j) \le e_k + M_k (1 - P_k + D_k)$. Without this test, two FGs can each pass item 4 while the pair cannot fit, and one FG is then dropped in the next cycle (Issue #60).
+5. Inter-FG conflict avoidance via Big-M ordering variables $b_{kj}$. If FG $k$ must start (at the latest $\min(e_k, T_\text{end}) - d_k$) no later than FG $j$ can arrive, the reverse order is infeasible. The code then fixes the order and creates no binary. This removes most pairs and does not change the optimum.
 6. Overlap indicators $z_k^\text{free}$ and $z_k^\text{sense}$. The code does not copy Appendix A's Eq. 16 literally: as extracted, it forces $z_k = 1$ for an FG that does *not* overlap the window, which contradicts $\sum_k z_k^\text{sense} = 0$. It uses a disjunctive encoding instead: if $z_k = 0$, the FG lies entirely before or entirely after the window (side chosen by a binary $w_k$).
 7. Strict protection of sensing window: $\sum_{k=1}^K z_k^\text{sense} = 0$.
+
+The solver is HiGHS with a 10 s limit per cycle, a relative MIP gap of 0, and an absolute gap of $10^{-3}$. The drop price is large, so the default relative gap ($10^{-4}$) can accept a schedule that is worse by more than one FG overlap after a drop. A time-limited solution that contains a drop is not used, because it does not prove that the drop is necessary.
 
 ### 5.2 ZigBee Superframe Adaptation (L-WSA Search)
 
@@ -179,6 +182,7 @@ Over discrete parameters:
 - $t_\text{offset} \in [0, \text{whitespace duration}]$.
 - Filter condition: $(1 + i + j) \cdot t_\text{SfSlot} \le dur_\text{end} - dur_\text{start}$.
 - Slot count $m, n$: Slots evaluated against residual WiFi fragment intervals $\mathcal{T}^\text{WiFi}$.
+- Transmission: L-WSA "selectively utilizes only interference-free intervals". The engine therefore does not send a CAP attempt or a CFP packet that overlaps a sensed WiFi fragment. The queued packet moves to the next clear attempt. Before Issue #60, these attempts collided with WiFi FGs that the soft MILP kept in the window.
 
 ---
 
@@ -200,10 +204,16 @@ Over discrete parameters:
 3. **Effective Spectrum Utilization** ($U_\text{eff}$): Successful WiFi and ZigBee airtime plus sensing windows that carried a ZBeacon, divided by run time.
 4. **WiFi Delay Overhead:** Jitter (ms), number of moved FGs, and maximum delay (ms).
 5. **Evaluated Parameter Sweeps:**
-   - $D_\text{free} \in [31, 62, 93, 123]$ ms.
-   - ZigBee superframe period $T_{ZB} \in [1000, 2000, 5000]$ ms.
-   - Traffic intensities: Traffic I (high load, about 88 % occupancy: 39.2 ms FGs, 5.3 ms whitespace) to Traffic IV (light load).
-   - Sensing window duration $D_\text{sensing} \in [10, 20, 50, 100]$ ms.
+   - $D_\text{free} \in [31, 62, 93, 123]$ ms (Figs. 11–14, 16, 17), and 63 ms for Fig. 15.
+   - ZigBee superframe period $T_{ZB} \in [1000, 2000, 5000]$ ms. Figs. 14–17 use 1000 ms only.
+   - Traffic intensities: Traffic I (high load, about 88 % occupancy: 39.2 ms FGs, 5.3 ms whitespace) to Traffic IV (light load, about 15 % occupancy: 25.8 ms FGs, 142.3 ms whitespace). This order follows Table 5, Sec. 5.3, Fig. 11, and Fig. 14.
+     - The paper contradicts itself. Sec. 5.2 calls Traffic IV "high-intensity". Its Fig. 9 values for $P(W > 10\text{ ms})$ are 79.2 % (Traffic I), 65.9 % (Traffic II), and 4.1 % (Traffic IV). The Table 5 mean whitespaces are 5.3, 9.2, 34.3, and 142.3 ms.
+     - The generator draws exponential whitespaces with the Table 5 means. Its tail $e^{-10/\mu}$ is 15.2 %, 33.7 %, 74.7 %, and 93.2 % for Traffic I to IV. `summarize_trace` reports the measured value as `whitespace_ccdf_10ms`.
+     - No generator can match Fig. 9 with the Table 5 mean of Traffic I. Markov's inequality gives $P(W > 10\text{ ms}) \le \mu / 10 = 53\%$ for any non-negative whitespace with $\mu = 5.3$ ms, and Fig. 9 gives 79.2 %. Thus the repo keeps the exponential generator and adds no mixture. `reviews/project_document.md` §3.1 gives the full argument.
+   - WiFi occupancy (Fig. 15): Exp 1–6 at $T_{ZB}$ = 1000 ms and $D_\text{free}$ = 63 ms on Traffic I–IV. The x-axis is the busy airtime of each trace divided by run time.
+   - Sensing window duration $D_\text{sensing} \in [10, 20, 50, 100]$ ms for Exp 4 on Traffic I (Fig. 16) and Traffic III (Fig. 17).
+   - Run length: 600 s per run by default, as the traces in Fig. 10. The sweep warns when a run has fewer than 20 ZigBee cycles.
+   - Acceptance: each $G_z$ and $PDR_w$ value that Sec. 5.3.1 states for Exp 4, 5, and 6, with a tolerance of ±0.02 ($G_z$) and ±0.005 ($PDR_w$).
 
 ---
 
@@ -246,7 +256,7 @@ Presentation ownership matches Review 2:
 4. **Simulation Methodology:** Trace-driven SimPy setup, traffic categorization, parameter sweeps.
 5. **Evaluation & Discussion:**
    - _Claim 1:_ Zero WiFi frame drop rate ($PDR_w = 0$) verified via Exp 4 delay-aware postponement.
-   - _Claim 2:_ ZigBee gain $G_z > 90\%$ under heavy load verified via Fig. 11 replication.
+   - _Claim 2:_ ZigBee gain under heavy load, compared with each Fig. 11 value of Sec. 5.3.1 (Review 3 §9 lists the deviations).
    - _Claim 3:_ L-WSA necessity confirmed via Exp 5/6 ablations.
 6. **Conclusion & Future Directions:** Software-only validation summary and path toward 802.11be multi-link operation.
 

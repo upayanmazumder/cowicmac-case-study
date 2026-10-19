@@ -60,6 +60,14 @@ Run the full test suite:
 pytest
 ```
 
+`pytest` skips the slow paper comparison. Run it on its own (about 2 min on 16 cores):
+
+```bash
+pytest -m slow
+```
+
+It compares 30 s runs with each $G_z$ and $PDR_w$ value of paper Sec. 5.3.1. Known deviations are strict `xfail` entries with their measured cause.
+
 Run linter, format, and type checks:
 
 ```bash
@@ -91,7 +99,7 @@ reservation, the fallback protects sensing first and reports a truncated grant.
 ZigBee gain compares delivered payload with demand in a clean window each cycle.
 An empty grant still counts as unmet demand.
 
-Run the benchmark sweep (quick smoke run):
+Run the benchmark sweep (quick smoke run: 3 s runs, one seed, small grid):
 
 ```bash
 python scripts/run_benchmark_sweep.py --quick
@@ -103,7 +111,28 @@ Run the full benchmark sweep:
 python scripts/run_benchmark_sweep.py --output-csv results/benchmark_results.csv
 ```
 
+The full sweep replays 600 s of trace per run (`--duration`, default 600). It warns when a run has fewer than 20 ZigBee cycles. It has three stages:
+
+- Figs. 11–14: Exp 1–6 against $D_{free}$ for each traffic profile and $T_{ZB}$.
+- Fig. 15: Exp 1–6 at $T_{ZB}$ = 1000 ms and $D_{free}$ = 63 ms on Traffic I–IV, against the WiFi occupancy of each trace.
+- Figs. 16 and 17: Exp 4 against $D_{sensing}$ on Traffic I and Traffic III.
+
+The sweep compares every $G_z$ and $PDR_w$ value that Sec. 5.3.1 of the paper states for Exp 4, 5, and 6 with the results. It prints PASS, FAIL, or SKIP for each point. Add `--strict` to exit with code 1 when a point fails.
+
 ### Evaluation Results
+
+**Provenance of `results/benchmark_results.csv` and `figures/`:** `python scripts/run_benchmark_sweep.py --duration 60 --seeds 1 --jobs 8` made both (200 runs, seed 42, all three stages, Traffic I and III in the main stage). Each run replays 60 s of trace: 60 cycles at $T_{ZB}$ = 1000 ms, 12 cycles at 5000 ms. The paper replays 600 s traces (Fig. 10), so treat these values as a reference run, not a full reproduction. A 10 s solver limit applies to each cycle, so time-limited cycles can differ between machines.
+
+Main results on Traffic I at $T_{ZB}$ = 1000 ms (Fig. 11):
+
+| Exp   | $G_z$ 31 / 62 / 123 ms | $PDR_w$ 31 / 62 / 123 ms | Paper $G_z$ / $PDR_w$             |
+| ----- | ---------------------- | ------------------------ | --------------------------------- |
+| Exp 1 | 0.132 / 0.116 / 0.116  | 11.4 / 14.0 / 14.0 %     | 1.3 % at 31 ms / 9.7 % at 123 ms  |
+| Exp 4 | 0.942 / 0.873 / 0.609  | 1.3 / 2.7 / 4.1 %        | > 98.6 / 96.3 / 93.4–94.7 % / 0 % |
+| Exp 5 | 1.000 / 1.000 / 1.000  | 1.3 / 3.4 / 8.2 %        | 100 % / < 1 % at 31, 2.8 % at 123 |
+| Exp 6 | 0.967 / 0.936 / 0.655  | 1.3 / 2.8 / 4.5 %        | as Exp 4                          |
+
+The acceptance check passes 5 of 17 paper points. Review 3 §9 lists each deviation. `reviews/project_document.md` §7 explains the causes: Traffic I at 123 ms needs about 101 % of each cycle, and the paper gives no MILP weights. The qualitative trends of Figs. 15–17 hold: $G_z$ falls as WiFi occupancy grows, and a longer sensing window lowers $G_z$ on Traffic I but not on Traffic III.
 
 The sweep draws the figures itself. To redraw them from an existing results CSV:
 

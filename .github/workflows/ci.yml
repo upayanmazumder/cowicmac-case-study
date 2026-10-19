@@ -76,3 +76,24 @@ jobs:
 
       - name: Run pytest
         run: pytest -v --cov=src/cowic --cov-report=xml --cov-report=term-missing --cov-fail-under=85
+
+  paper-points:
+    name: Paper Scenarios (slow)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run paper-point tests
+        run: pytest -v -m slow

@@ -1,5 +1,5 @@
 name: "Traffic_IV_Light_Load"
-description: "Light WiFi traffic profile with long natural whitespaces"
+description: "Light WiFi traffic profile with long natural whitespaces (25.8 ms FGs, 142.3 ms whitespace). Uses the Table 5 values. Sec. 5.2 calls this profile high-intensity, which contradicts Table 5. Exponential whitespaces give P(W > 10 ms) = exp(-10/142.3) = 93.2 percent. Sec. 5.2 (Fig. 9) gives 4.1 percent. To match it with this mean, the whitespaces longer than 10 ms need a mean of at least 3237 ms. See reviews/project_document.md section 3.1."
 avg_fg_duration_ms: 25.8
 avg_whitespace_ms: 142.3
 qos_sensitive_ratio: 0.452
