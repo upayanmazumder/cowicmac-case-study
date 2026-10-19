@@ -253,7 +253,7 @@ Other paper values from the same run:
 | Exp 2 $PDR_w$, Traffic I, 123 ms          | 7.6 %        | 0.0 %     |
 | Exp 1 $G_z$, Traffic III, 31 / 123 ms     | 54.3 / 36.1 % | 68.3 / 68.3 % |
 | Exp 2 $G_z$ / $PDR_w$, Traffic III, 123 ms | 93.9 / 1.4 % | 99.4 / 0.0 % |
-| Exp 4 $G_z$, Traffic I, $D_{\text{sensing}}$ 10 → 100 ms (31 ms) | 90.5 → 48.0 % | 94.2 → 63.1 % |
+| Exp 4 $G_z$, Traffic I, $D_{\text{sensing}}$ 10 → 100 ms (paper: $D_{\text{free}}$ not stated; sim: 31 ms) | 90.5 → 48.0 % | 94.2 → 63.1 % |
 
 Causes (`reviews/project_document.md` §7, "Fidelity at high load"):
 

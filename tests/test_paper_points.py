@@ -5,7 +5,8 @@ run with ``pytest -m slow`` (a separate CI job). Each point uses one 30 s run
 of Traffic I (seed 42, T_ZB = 1000 ms, 30 cycles) and the tolerance of
 ``scripts.run_benchmark_sweep.ACCEPT_TOLERANCE``.
 
-Points that this model does not reproduce are strict ``xfail`` entries with
+Points that this model does not reproduce are ``xfail`` entries (strict unless
+listed in ``BORDERLINE``) with
 the measured cause. If a later change brings such a point inside the
 tolerance, the test fails as XPASS. Then move the point out of
 ``KNOWN_DEVIATIONS`` and update Review 3 §9.
@@ -56,6 +57,12 @@ KNOWN_DEVIATIONS: dict[tuple[str, str, float], str] = {
     ("Exp_5", "wifi_drop_rate", 123.0): _RIGID,
 }
 
+# Within 0.015 of the tolerance edge at 30 s and inside it at 60 s
+# (reference sweep): not strict, so a faster or slower solver can not fail CI.
+BORDERLINE: frozenset[tuple[str, str, float]] = frozenset(
+    {("Exp_6", "zigbee_gain_ratio", 31.0), ("Exp_5", "wifi_drop_rate", 31.0)}
+)
+
 
 def _config_for(experiment_id: str) -> str:
     number = experiment_id.split("_")[1]
@@ -91,7 +98,9 @@ def _params() -> list[object]:
         key = (point.experiment_id, point.metric, point.d_free_ms)
         name = f"{point.experiment_id}-{point.metric}-{point.d_free_ms:g}"
         reason = KNOWN_DEVIATIONS.get(key)
-        marks = [pytest.mark.xfail(strict=True, reason=reason)] if reason else []
+        # Near-threshold points can flip with solver timing on other machines.
+        strict = key not in BORDERLINE
+        marks = [pytest.mark.xfail(strict=strict, reason=reason)] if reason else []
         params.append(pytest.param(point, id=name, marks=marks))
     return params
 
