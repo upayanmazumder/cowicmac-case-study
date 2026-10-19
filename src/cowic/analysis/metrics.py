@@ -160,8 +160,9 @@ def delay_overhead(
     """Return ``(jitter_ms, moved_fg_count, max_fg_delay_ms)``.
 
     Jitter and maximum delay cover delivered FGs only; a dropped FG has no
-    delivery delay. Every FG moved from its original start counts as moved,
-    including postponed ones.
+    delivery delay. Every FG moved from its original start counts as moved:
+    postponed, later, or earlier. ``delay_ms`` is never negative, so an FG
+    moved earlier is detected from its scheduled start instead.
 
     ``delivered_fg_ids``, if given, refines "delivered" beyond the deadline
     heuristic in ``_is_dropped``: an FG scheduled on time but lost to a
@@ -173,9 +174,10 @@ def delay_overhead(
     delays: list[float] = []
     moved = 0
     for decision in decisions:
-        if decision.delay_ms > MOVED_TOLERANCE_MS:
-            moved += 1
         fg = frame_groups[decision.fg_id]
+        shift = abs(decision.scheduled_start_ms - fg.original_start_ms)
+        if decision.is_postponed or shift > MOVED_TOLERANCE_MS:
+            moved += 1
         dropped = _is_dropped(decision, fg)
         if delivered_fg_ids is not None:
             dropped = dropped or decision.fg_id not in delivered_fg_ids

@@ -177,6 +177,7 @@ def run_point(
         "duration_s": duration_s,
         "cycles_run": float(cycles),
         "fallback_cycles": summary["fallback_cycles"],
+        "milp_unproven_cycles": summary["milp_unproven_cycles"],
         "runtime_s": elapsed_s,
     }
     row.update(asdict(metrics))
