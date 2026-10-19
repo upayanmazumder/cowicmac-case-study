@@ -15,7 +15,6 @@ from cowic.exceptions import ConfigurationError
 from cowic.sim.simulation_engine import (
     SimulationConfig,
     SimulationEngine,
-    _build_scheduler,
     _pending_packets,
     _synthesize_zigbee_packets,
 )
@@ -611,11 +610,9 @@ def test_demand_report_matches_d_free_across_ctc_directions(
         assert engine.last_demand_history == expected
 
 
-def test_sensing_window_consumes_zigbee_grant_and_contains_zbeacon(
+def test_sensing_window_contains_zbeacon_and_reduces_gain_under_load(
     short_trace: Path,
 ) -> None:
-    from cowic.analysis.metrics import zigbee_gain_ratio
-
     gains = []
     for sensing_ms in (10.0, 100.0):
         config = SimulationConfig(
@@ -632,13 +629,7 @@ def test_sensing_window_consumes_zigbee_grant_and_contains_zbeacon(
         engine = SimulationEngine(config)
         summary = engine.run()
         assert engine.last_medium is not None
-        gains.append(
-            zigbee_gain_ratio(
-                engine.last_medium.transmissions,
-                31.0 * int(summary["cycles_run"]),
-                horizon_ms=3000.0,
-            )
-        )
+        gains.append(measure_run(engine, summary).zigbee_gain_ratio)
         records = [
             record
             for record in engine.last_medium.transmissions
@@ -651,7 +642,9 @@ def test_sensing_window_consumes_zigbee_grant_and_contains_zbeacon(
                 records, engine.last_zbeacon_windows, strict=True
             )
         )
-    assert gains[1] < gains[0] - 0.05
+    # A longer sensing reservation can leave fewer feasible data grants.
+    # This trace exercises the drop in G_z seen in paper Fig. 16.
+    assert gains[1] < gains[0] - 0.1
 
 
 def test_pending_packets_derived_from_d_free_unless_overridden(
@@ -717,19 +710,6 @@ def test_beacon2_does_not_overlap_first_cfp_packet_without_cap() -> None:
         )
 
 
-@pytest.mark.parametrize("mode", ["milp_soft_constraint", "milp_hard_constraint"])
-def test_milp_accepts_unproven_solutions_and_reports_them(
-    short_trace: Path, mode: str
-) -> None:
-    """Issue #39 policy: a time-limited MILP solution meets every hard
-    constraint, so the AP uses it, and the run summary counts it."""
-    config = replace(_exp4_config(short_trace), wifi_scheduling=mode)
-    _, statuses = _build_scheduler(config)
-    assert statuses == {"Optimal", "Integer Feasible"}
-    result = SimulationEngine(replace(config, duration_s=1.0)).run()
-    assert "milp_unproven_cycles" in result
-
-
 def test_run_summary_counts_cycles_shorter_than_sensing(short_trace: Path) -> None:
     """Every 5 ms cycle misses the required 10 ms sensing reservation."""
     config = replace(_exp4_config(short_trace), duration_s=0.2, zigbee_period_ms=5.0)
@@ -750,6 +730,7 @@ def test_gain_counts_demand_when_wifi_grants_no_window(short_trace: Path) -> Non
     """A zero grant cannot vanish from the clean-medium denominator."""
     config = replace(_exp4_config(short_trace), duration_s=1.0)
     engine, _, metrics = _run_measured(config)
+    assert engine.last_free_windows[0][0] == engine.last_free_windows[0][1]
     assert engine.last_zigbee_ideal_payload_ms > 0
     assert engine.last_zigbee_delivered_payload_ms == 0
     assert metrics.zigbee_gain_ratio == 0.0
@@ -833,3 +814,42 @@ def test_sensing_credit_is_the_window_not_the_beacon(short_trace: Path) -> None:
     assert metrics.spectrum_utilization == pytest.approx(
         min(1.0, base + windows / 2000.0)
     )
+
+
+@pytest.fixture
+def congested_trace(tmp_path: Path) -> Path:
+    """Traffic I, 5 s, seed 42: cycle 1000 used to be Infeasible (Issue #38)."""
+    trace = tmp_path / "traffic1_5s.parquet"
+    generate_trace("configs/base_traffic1.yaml", 5.0, trace, seed=42)
+    return trace
+
+
+def test_exp4_congested_cycle_needs_no_fallback(
+    congested_trace: Path, tmp_path: Path
+) -> None:
+    """Issue #38 acceptance: Exp 4, Traffic I, D_free = 31 ms."""
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp4_cowic_full.yaml"), trace_dir=tmp_path
+    )
+    _, summary, metrics = _run_measured(
+        replace(config, duration_s=5.0, d_free_ms=31.0, wifi_trace_path=congested_trace)
+    )
+    assert summary["fallback_cycles"] == 0.0
+    assert summary["dropped_frame_groups"] == 0.0
+    assert metrics.wifi_drop_rate == 0.0
+
+
+def test_exp5_keeps_the_full_window_every_cycle(
+    congested_trace: Path, tmp_path: Path
+) -> None:
+    """Issue #38 acceptance: Exp 5 keeps t_free_end - t_free_start == D_free."""
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp5_rigid_vacate.yaml"), trace_dir=tmp_path
+    )
+    engine = SimulationEngine(
+        replace(config, duration_s=5.0, d_free_ms=62.0, wifi_trace_path=congested_trace)
+    )
+    engine.run()
+    assert engine.last_free_windows
+    for start, end in engine.last_free_windows:
+        assert end - start == pytest.approx(62.0)

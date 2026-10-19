@@ -8,7 +8,10 @@ from cowic.wifi.baselines import find_whitespaces
 from cowic.wifi.fallback import (
     FALLBACK_STATUS,
     NO_SENSING_STATUS,
+    VACATE_STATUS,
+    VACATE_TRUNCATED_STATUS,
     fallback_whitespace_expansion,
+    vacate_window,
 )
 from traces.playback import frame_groups_from_frame, iter_cycles
 from traces.synthetic_generator import build_trace, load_profile
@@ -175,12 +178,12 @@ def test_cycle_shorter_than_sensing_window_is_flagged() -> None:
     assert result.t_free_end_ms == result.t_free_start_ms
 
 
-def test_carryover_prevents_false_sensing_reservation() -> None:
+@pytest.mark.parametrize("rigid", [False, True])
+def test_carryover_prevents_false_sensing_reservation(rigid: bool) -> None:
     """The remaining 12 ms cannot hold a 15 ms sensing window."""
     fg = _fg(1, 0.0, 10.0)
-    result = fallback_whitespace_expansion(
-        [fg], 0.0, 20.0, 0.0, 15.0, channel_free_at=8.0
-    )
+    scheduler = vacate_window if rigid else fallback_whitespace_expansion
+    result = scheduler([fg], 0.0, 20.0, 0.0, 15.0, channel_free_at=8.0)
     assert result.solver_status == NO_SENSING_STATUS
     assert result.t_sense_start_ms == result.t_sense_end_ms
 
@@ -226,3 +229,45 @@ def test_invalid_inputs() -> None:
         fallback_whitespace_expansion(FGS, 0.0, 100.0, 10.0, -1.0)
     with pytest.raises(ConfigurationError):
         fallback_whitespace_expansion(FGS, 100.0, 0.0, 10.0)
+
+
+def test_vacate_window_never_shrinks_the_reservation() -> None:
+    """Issue #38: Exp 5 removes WiFi from the window; it never shrinks it."""
+    fgs = [_fg(1, 0.0, 30.0, bound=0.0), _fg(2, 35.0, 60.0, bound=0.0)]
+    result = vacate_window(fgs, 0.0, 100.0, 40.0)
+    assert result.solver_status == VACATE_STATUS
+    assert result.t_free_end_ms - result.t_free_start_ms == pytest.approx(40.0)
+    by_id = {fg.fg_id: fg for fg in fgs}
+    for d in result.decisions:
+        if d.is_postponed:
+            continue
+        end = d.scheduled_start_ms + by_id[d.fg_id].duration_ms
+        assert end <= result.t_free_start_ms or d.scheduled_start_ms >= (
+            result.t_free_end_ms
+        )
+
+
+def test_vacate_window_uses_positions_after_carryover() -> None:
+    """A shifted FG finishes at 65 ms, leaving room for a 30 ms grant."""
+    fg = FrameGroup(1, 0.0, 45.0, 100.0, 0.0, False)
+    result = vacate_window([fg], 0.0, 100.0, 30.0, channel_free_at=20.0)
+    assert result.solver_status == VACATE_STATUS
+    assert result.decisions[0].scheduled_start_ms == 20.0
+    assert not result.decisions[0].is_postponed
+    assert result.t_free_start_ms >= 65.0
+    assert result.t_free_end_ms - result.t_free_start_ms == 30.0
+
+
+def test_vacate_window_preserves_airtime_when_request_exceeds_cycle() -> None:
+    fg = _fg(1, 0.0, 20.0, bound=10.0)
+    result = vacate_window([fg], 0.0, 30.0, 40.0, 10.0)
+    assert result.solver_status == VACATE_TRUNCATED_STATUS
+    assert result.t_sense_end_ms - result.t_sense_start_ms == 10.0
+    assert result.t_free_end_ms - result.t_free_start_ms == 20.0
+    assert result.decisions[0].is_postponed
+
+
+def test_vacate_window_reports_cycle_shorter_than_sensing() -> None:
+    result = vacate_window([], 0.0, 5.0, 40.0, 10.0)
+    assert result.solver_status == NO_SENSING_STATUS
+    assert result.t_free_end_ms == result.t_free_start_ms

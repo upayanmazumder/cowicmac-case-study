@@ -195,9 +195,9 @@ Over discrete parameters:
 
 ### 6.2 Key Metrics & Evaluation Dimensions
 
-1. **ZigBee Transmission Gain ($G_z$):** Delivered ZigBee payload divided by theoretical maximum in clean spectrum.
-2. **WiFi FG Drop Rate ($PDR_w$):** Ratio of discarded WiFi airtime duration to total requested duration.
-3. **Effective Spectrum Utilization** ($U_\text{eff}$): Proportion of cycle occupied by successful WiFi, ZigBee, and control airtime.
+1. **ZigBee Transmission Gain ($G_z$):** Delivered data payload divided by clean-window payload for configured demand. Every cycle contributes ideal payload, including empty grants.
+2. **WiFi FG Drop Rate ($PDR_w$):** Airtime of deadline-dropped or collision-destroyed FGs divided by requested WiFi airtime.
+3. **Effective Spectrum Utilization** ($U_\text{eff}$): Successful WiFi and ZigBee airtime plus sensing windows that carried a ZBeacon, divided by run time.
 4. **WiFi Delay Overhead:** Jitter (ms), number of moved FGs, and maximum delay (ms).
 5. **Evaluated Parameter Sweeps:**
    - $D_\text{free} \in [31, 62, 93, 123]$ ms.

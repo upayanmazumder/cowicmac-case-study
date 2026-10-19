@@ -71,6 +71,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "zigbee_period_ms": config.zigbee_period_ms,
         "cycles_run": int(summary["cycles_run"]),
         "fallback_cycles": int(summary["fallback_cycles"]),
+        "milp_unproven_cycles": int(summary["milp_unproven_cycles"]),
+        "sensing_missed_cycles": int(summary["sensing_missed_cycles"]),
+        "dropped_frame_groups": int(summary["dropped_frame_groups"]),
         **asdict(metrics),
     }
     if args.json:

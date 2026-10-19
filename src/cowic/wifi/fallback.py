@@ -20,6 +20,7 @@ the sensing window, the result has ``NO_SENSING_STATUS`` and no window.
 import math
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 
 from cowic.exceptions import ConfigurationError
 from cowic.models.frame_group import FrameGroup
@@ -29,6 +30,10 @@ from cowic.wifi.milp_scheduler import ScheduleResult
 FALLBACK_STATUS = "fallback_whitespace"
 # The cycle (after carryover) is shorter than the sensing window.
 NO_SENSING_STATUS = "fallback_no_sensing"
+# Exp 5 fallback: full window reserved, overlapping WiFi vacated.
+VACATE_STATUS = "fallback_vacate"
+# The cycle can hold sensing but not the full requested free window.
+VACATE_TRUNCATED_STATUS = "fallback_vacate_truncated"
 _SEARCH_STEPS = 40  # Bisection steps; resolution is cycle_length / 2**40.
 
 
@@ -112,6 +117,75 @@ def fallback_whitespace_expansion(
                 baseline_end=sense_only_end,
             )
 
+    sense_end = min(window_start + d_sensing_ms, window_end)
+    return ScheduleResult(
+        decisions=defer_around_window(
+            frame_groups, window_start, window_end, t_end_ms, channel_free_at
+        ),
+        t_free_start_ms=sense_end,
+        t_free_end_ms=window_end,
+        t_sense_start_ms=window_start,
+        t_sense_end_ms=sense_end,
+        solver_status=status,
+        solve_time_ms=(time.perf_counter() - began) * 1000.0,
+    )
+
+
+def vacate_window(
+    frame_groups: Sequence[FrameGroup],
+    t_start_ms: float,
+    t_end_ms: float,
+    d_free_ms: float,
+    d_sensing_ms: float = 0.0,
+    channel_free_at: float = -math.inf,
+) -> ScheduleResult:
+    """Exp 5 fallback: vacate WiFi from the largest feasible reservation.
+
+    A full request fits whenever the remaining cycle is long enough. If it
+    does not fit, preserve sensing first and reserve the remaining time for
+    ZigBee data. Report a truncated status rather than claiming a full grant.
+    If even sensing does not fit, report ``NO_SENSING_STATUS``.
+    """
+    if d_free_ms < 0 or d_sensing_ms < 0:
+        raise ConfigurationError(
+            f"Window durations must be non-negative, got d_free={d_free_ms}, "
+            f"d_sensing={d_sensing_ms}"
+        )
+    began = time.perf_counter()
+    t_start_ms = max(t_start_ms, min(channel_free_at, t_end_ms))
+    need = d_sensing_ms + d_free_ms
+    # Estimate whitespace after carryover and ordinary WiFi serialization.
+    # Original FG positions can suggest a window that needlessly postpones
+    # a shifted FG, even though a clean window exists later in the cycle.
+    by_id = {fg.fg_id: fg for fg in frame_groups}
+    baseline = defer_around_window(
+        frame_groups, t_start_ms, t_start_ms, t_end_ms, channel_free_at
+    )
+    placed = []
+    for decision in baseline:
+        if decision.is_postponed:
+            continue
+        fg = by_id[decision.fg_id]
+        placed.append(
+            replace(fg, original_start_ms=decision.scheduled_start_ms)
+            if decision.scheduled_start_ms != fg.original_start_ms
+            else fg
+        )
+    gaps = find_whitespaces(placed, t_start_ms, t_end_ms)
+    largest_start = max(
+        gaps, key=lambda gap: gap[1] - gap[0], default=(t_start_ms, t_start_ms)
+    )[0]
+    status = VACATE_STATUS
+    if need > t_end_ms - t_start_ms:
+        if d_sensing_ms > t_end_ms - t_start_ms:
+            window_start = window_end = t_start_ms
+            status = NO_SENSING_STATUS
+        else:
+            window_start, window_end = t_start_ms, t_end_ms
+            status = VACATE_TRUNCATED_STATUS
+    else:
+        window_start = min(largest_start, t_end_ms - need)
+        window_end = window_start + need
     sense_end = min(window_start + d_sensing_ms, window_end)
     return ScheduleResult(
         decisions=defer_around_window(

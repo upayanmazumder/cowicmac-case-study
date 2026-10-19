@@ -481,6 +481,7 @@ class _RunStats:
     cycles_run: int = 0
     total_frame_groups: int = 0
     postponed_frame_groups: int = 0
+    dropped_frame_groups: int = 0
     fallback_cycles: int = 0
     wbeacon_delivered: int = 0
     wbeacon_lost: int = 0
@@ -510,7 +511,9 @@ class _RunStats:
             else:
                 self.wbeacon_lost += 1
 
-    def record_decision(self, decision: SchedulingDecision) -> None:
+    def record_decision(
+        self, decision: SchedulingDecision, fg: FrameGroup | None = None
+    ) -> None:
         """Fold one FG's final decision into the FG-level totals.
 
         Each FG is recorded once: when it is transmitted, dropped, or still
@@ -519,6 +522,11 @@ class _RunStats:
         self.total_frame_groups += 1
         if decision.is_postponed:
             self.postponed_frame_groups += 1
+            if (
+                fg is not None
+                and decision.scheduled_start_ms + fg.duration_ms > fg.deadline_ms
+            ):
+                self.dropped_frame_groups += 1
         self.max_fg_delay_ms = max(self.max_fg_delay_ms, decision.delay_ms)
 
     def finalize(self, medium: ChannelMedium, horizon_ms: float) -> dict[str, float]:
@@ -549,6 +557,7 @@ class _RunStats:
             "cycles_run": float(self.cycles_run),
             "total_frame_groups": float(self.total_frame_groups),
             "postponed_frame_groups": float(self.postponed_frame_groups),
+            "dropped_frame_groups": float(self.dropped_frame_groups),
             "fallback_cycles": float(self.fallback_cycles),
             "wbeacon_delivered": float(self.wbeacon_delivered),
             "wbeacon_lost": float(self.wbeacon_lost),
@@ -582,6 +591,8 @@ class SimulationEngine:
         self.last_zigbee_state: ZCState | None = None
         self.last_zbeacon_windows: list[tuple[float, float]] = []
         self.last_demand_history: list[float] = []
+        # Free window the AP announced in each cycle, as (start_ms, end_ms).
+        self.last_free_windows: list[tuple[float, float]] = []
         # G_z inputs (Sec. 5.1): delivered ZigBee payload and the
         # payload the same ZigBee model could deliver from each cycle's
         # demand in a clean window. Payload excludes the PHY header (Eq. 7).
@@ -652,6 +663,7 @@ class SimulationEngine:
         self.last_demand_history = []
         self._waiting = {}
         self._zigbee_cycles = []
+        self.last_free_windows = []
 
         env = simpy.Environment()
         env.process(
@@ -712,7 +724,7 @@ class SimulationEngine:
     def _finalize(self, decision: SchedulingDecision, stats: _RunStats) -> None:
         """Record an FG's one final decision."""
         self.last_decisions.append(decision)
-        stats.record_decision(decision)
+        stats.record_decision(decision, self.last_frame_groups.get(decision.fg_id))
 
     def _drive_cycles(
         self,
@@ -798,6 +810,9 @@ class SimulationEngine:
                 yield env.timeout(ctc.last_attempts * ctc.delay_ms)
 
             stats.record_cycle(outcome, config.d_sensing_ms)
+            self.last_free_windows.append(
+                (outcome.schedule.t_free_start_ms, outcome.schedule.t_free_end_ms)
+            )
             self.last_demand_history.append(outcome.d_free_ms)
             carried = []
             for decision in outcome.schedule.decisions:
