@@ -730,11 +730,12 @@ def test_milp_accepts_unproven_solutions_and_reports_them(
     assert "milp_unproven_cycles" in result
 
 
-def test_run_summary_reports_missed_sensing_windows(short_trace: Path) -> None:
-    """Issue #48: a cycle with less than D_sensing of sensing is counted."""
-    result = SimulationEngine(replace(_exp4_config(short_trace), duration_s=2.0)).run()
-    assert "sensing_missed_cycles" in result
-    assert 0.0 <= result["sensing_missed_cycles"] <= result["cycles_run"]
+def test_run_summary_counts_cycles_shorter_than_sensing(short_trace: Path) -> None:
+    """Every 5 ms cycle misses the required 10 ms sensing reservation."""
+    config = replace(_exp4_config(short_trace), duration_s=0.2, zigbee_period_ms=5.0)
+    result = SimulationEngine(config).run()
+    assert result["cycles_run"] == 40.0
+    assert result["sensing_missed_cycles"] == 40.0
 
 
 def _run_measured(
@@ -743,6 +744,15 @@ def _run_measured(
     engine = SimulationEngine(config)
     summary = engine.run()
     return engine, summary, measure_run(engine, summary)
+
+
+def test_gain_counts_demand_when_wifi_grants_no_window(short_trace: Path) -> None:
+    """A zero grant cannot vanish from the clean-medium denominator."""
+    config = replace(_exp4_config(short_trace), duration_s=1.0)
+    engine, _, metrics = _run_measured(config)
+    assert engine.last_zigbee_ideal_payload_ms > 0
+    assert engine.last_zigbee_delivered_payload_ms == 0
+    assert metrics.zigbee_gain_ratio == 0.0
 
 
 def test_exp5_without_wifi_in_window_has_full_gain(tmp_path: Path) -> None:

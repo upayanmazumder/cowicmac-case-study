@@ -15,8 +15,8 @@ Definitions:
   under ideal interference-free conditions. The engine computes both per
   cycle (``SimulationEngine.last_zigbee_delivered_payload_ms`` and
   ``last_zigbee_ideal_payload_ms``): payload is ``t_pk`` minus the PHY header
-  (Eq. 7), the ideal is the same ZigBee model in the same window with no
-  WiFi, and only packets inside the reported demand count.
+  (Eq. 7). The ideal uses a demand-sized clean window in every cycle,
+  even if WiFi grants no airtime. Only packets inside the demand count.
   :func:`zigbee_gain_ratio` is the older airtime proxy over
   :func:`zigbee_clean_capacity_ms`, kept for callers without those inputs.
 * **PDR_w**: WiFi FG airtime lost over all requested FG airtime. An FG is
@@ -95,8 +95,7 @@ def zigbee_payload_gain(delivered_payload_ms: float, ideal_payload_ms: float) ->
     """G_z: delivered ZigBee payload over the ideal clean-window payload.
 
     Raises:
-        ConfigurationError: On negative input, or delivered above ideal
-            (the engine caps each cycle at its ideal, so this signals a bug).
+        ConfigurationError: On negative input, or delivered above ideal.
     """
     _check_non_negative(
         delivered_payload_ms=delivered_payload_ms, ideal_payload_ms=ideal_payload_ms
