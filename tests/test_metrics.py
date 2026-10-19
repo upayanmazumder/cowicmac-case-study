@@ -12,6 +12,7 @@ from cowic.analysis.metrics import (
     wifi_drop_rate,
     zigbee_clean_capacity_ms,
     zigbee_gain_ratio,
+    zigbee_payload_gain,
 )
 from cowic.exceptions import ConfigurationError
 from cowic.models.frame_group import FrameGroup, SchedulingDecision
@@ -242,3 +243,40 @@ def test_fg_moved_earlier_counts_as_moved() -> None:
     _, moved, max_delay = delay_overhead([early], {7: fg})
     assert moved == 1
     assert max_delay == 0.0
+
+
+def test_payload_gain_is_delivered_over_ideal() -> None:
+    """Issue #33: G_z = delivered payload / ideal clean-window payload."""
+    assert zigbee_payload_gain(45.0, 60.0) == pytest.approx(0.75)
+    assert zigbee_payload_gain(60.0, 60.0) == 1.0
+    assert zigbee_payload_gain(0.0, 0.0) == 0.0
+
+
+def test_payload_gain_rejects_delivered_above_ideal() -> None:
+    with pytest.raises(ConfigurationError):
+        zigbee_payload_gain(61.0, 60.0)
+    with pytest.raises(ConfigurationError):
+        zigbee_payload_gain(-1.0, 60.0)
+
+
+def test_drop_rate_counts_collision_destroyed_fgs() -> None:
+    """Issue #34: a transmitted FG that is not delivered is lost."""
+    # FG 1 kept but collided, FG 2 kept and delivered, FG 4 dropped (5 ms).
+    delivered = {2}
+    rate = wifi_drop_rate(DECISIONS, FGS, delivered)
+    # Lost: FG 1 (20 ms) + FG 4 (5 ms) of 55 ms. FG 3 is still postponed.
+    assert rate == pytest.approx(25.0 / 55.0)
+    # Without delivery data only the deadline drop counts.
+    assert wifi_drop_rate(DECISIONS, FGS) == pytest.approx(5.0 / 55.0)
+
+
+def test_calculator_uses_payload_gain_when_given() -> None:
+    metrics = MetricsCalculator().compute(
+        [],
+        DECISIONS,
+        FGS,
+        horizon_ms=100.0,
+        zigbee_capacity_ms=40.0,
+        zigbee_delivered_payload_ms=30.0,
+    )
+    assert metrics.zigbee_gain_ratio == pytest.approx(0.75)

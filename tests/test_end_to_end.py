@@ -3,8 +3,14 @@
 from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+from cowic.analysis.metrics import (
+    SimulationMetrics,
+    measure_run,
+    spectrum_utilization,
+)
 from cowic.exceptions import ConfigurationError
 from cowic.sim.simulation_engine import (
     SimulationConfig,
@@ -730,3 +736,100 @@ def test_run_summary_counts_cycles_shorter_than_sensing(short_trace: Path) -> No
     result = SimulationEngine(config).run()
     assert result["cycles_run"] == 40.0
     assert result["sensing_missed_cycles"] == 40.0
+
+
+def _run_measured(
+    config: SimulationConfig,
+) -> tuple[SimulationEngine, dict[str, float], SimulationMetrics]:
+    engine = SimulationEngine(config)
+    summary = engine.run()
+    return engine, summary, measure_run(engine, summary)
+
+
+def test_gain_counts_demand_when_wifi_grants_no_window(short_trace: Path) -> None:
+    """A zero grant cannot vanish from the clean-medium denominator."""
+    config = replace(_exp4_config(short_trace), duration_s=1.0)
+    engine, _, metrics = _run_measured(config)
+    assert engine.last_zigbee_ideal_payload_ms > 0
+    assert engine.last_zigbee_delivered_payload_ms == 0
+    assert metrics.zigbee_gain_ratio == 0.0
+
+
+def test_exp5_without_wifi_in_window_has_full_gain(tmp_path: Path) -> None:
+    """Issue #33 acceptance: no WiFi inside the window gives G_z = 1."""
+    trace = tmp_path / "no_wifi.parquet"
+    pd.DataFrame(
+        [
+            {
+                "fg_id": 0,
+                "arrival_time_ms": 99_000.0,
+                "duration_ms": 1.0,
+                "deadline_ms": 99_200.0,
+                "original_start_ms": 99_000.0,
+                "qos_sensitive": False,
+            }
+        ]
+    ).to_parquet(trace)
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp5_rigid_vacate.yaml"), trace_dir=tmp_path
+    )
+    _, _, metrics = _run_measured(
+        replace(config, duration_s=3.0, wifi_trace_path=trace)
+    )
+    assert metrics.zigbee_gain_ratio == pytest.approx(1.0, abs=0.01)
+
+
+def test_exp1_light_load_gain_is_not_clamped_to_one(tmp_path: Path) -> None:
+    """Issue #33 acceptance: Exp 1 on Traffic III at 31 ms is not 100 %."""
+    trace = tmp_path / "traffic3.parquet"
+    generate_trace("configs/base_traffic3.yaml", 5.0, trace, seed=42)
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp1_uncoordinated.yaml"), trace_dir=tmp_path
+    )
+    _, _, metrics = _run_measured(
+        replace(config, duration_s=5.0, d_free_ms=31.0, wifi_trace_path=trace)
+    )
+    assert metrics.zigbee_gain_ratio < 0.99
+
+
+def test_exp1_drop_rate_counts_collisions(short_trace: Path, tmp_path: Path) -> None:
+    """Issue #34 acceptance: Exp 1, Traffic I, D_free = 123 ms has PDR_w > 5 %."""
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp1_uncoordinated.yaml"), trace_dir=tmp_path
+    )
+    _, summary, metrics = _run_measured(
+        replace(config, duration_s=3.0, d_free_ms=123.0, wifi_trace_path=short_trace)
+    )
+    assert metrics.wifi_drop_rate > 0.05
+    assert "wifi_collision_share" in summary
+    assert "wifi_drop_rate" not in summary
+
+
+def test_lost_ctc_earns_no_sensing_credit(short_trace: Path) -> None:
+    """Issue #47 acceptance: with every CTC frame lost, U_eff gets no
+    sensing airtime."""
+    config = replace(
+        _exp4_config(short_trace),
+        duration_s=2.0,
+        d_sensing_ms=100.0,
+        ctc_per=1.0,
+        ctc_max_retries=0,
+    )
+    engine, _, metrics = _run_measured(config)
+    assert engine.last_medium is not None
+    expected = spectrum_utilization(engine.last_medium.transmissions, 2000.0, 0.0)
+    assert metrics.spectrum_utilization == pytest.approx(expected)
+
+
+def test_sensing_credit_is_the_window_not_the_beacon(short_trace: Path) -> None:
+    """Issue #47: a sensing window that carried a ZBeacon counts in full."""
+    engine, _, metrics = _run_measured(
+        replace(_exp4_config(short_trace), duration_s=2.0)
+    )
+    assert engine.last_medium is not None
+    windows = sum(end - start for start, end in engine.last_zbeacon_windows)
+    base = spectrum_utilization(engine.last_medium.transmissions, 2000.0, 0.0)
+    assert windows > 0
+    assert metrics.spectrum_utilization == pytest.approx(
+        min(1.0, base + windows / 2000.0)
+    )
