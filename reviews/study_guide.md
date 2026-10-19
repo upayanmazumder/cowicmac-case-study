@@ -4,7 +4,7 @@ Computer Networks case study, Review 3. For the three team members. Read the cas
 
 ## 1. The project in five sentences
 
-WiFi and ZigBee share the 2.4 GHz band, and WiFi wins every collision. In CoWiC-MAC the ZigBee coordinator (ZC) tells the WiFi access point (AP) how much airtime it needs. The AP moves some WiFi frame groups (FGs) in time and opens one clean window. The AP tells the ZC where the window is, and the ZC fits its superframe into it. We built this as a software simulation and compared it with the base paper [1].
+WiFi and ZigBee share the 2.4 GHz band. Real WiFi is stronger and accesses the channel more aggressively, so ZigBee suffers more from overlaps. (In our simulation any overlap marks both frames as failed.) In CoWiC-MAC the ZigBee coordinator (ZC) tells the WiFi access point (AP) how much airtime it needs. The AP moves some WiFi frame groups (FGs) in time and opens one free window. The AP tells the ZC where the window is, and the ZC fits its superframe into it. We built this as a software simulation and compared it with the base paper [1].
 
 ## 2. Concepts you must be able to explain
 
@@ -30,13 +30,14 @@ For each concept: say what it is, then say where it appears in our project.
 
 ## 3. One cycle, step by step
 
-1. The ZC sends a ZBeacon in the sensing window. It carries the airtime demand D_free.
-2. The AP collects the FGs of the cycle and solves the MILP.
-3. The MILP gives a new start time for each FG, a flag for each FG that waits for the next cycle, and the positions of the free window and the sensing window.
-4. The AP sends a WBeacon with the window positions.
-5. The ZC runs L-WSA. It picks slot length, CAP slots, CFP slots and beacon offset. It avoids the WiFi fragments that stay inside the window.
-6. Both sides transmit. The medium marks any pair of overlapping transmissions as failed.
-7. The metrics module reads the records and computes G_z, PDR_w, U_eff, jitter, moved FGs and maximum delay.
+1. The AP broadcasts WBeacon 1 with the beacon interval and the position of the sensing window. The ZC listens by default and reads it.
+2. The ZC sends a ZBeacon in the sensing window. It carries the airtime demand D_free.
+3. The AP collects the FGs of the cycle and solves the MILP.
+4. The MILP gives a new start time for each FG, a flag for each FG that waits for the next cycle, and the positions of the free window and the sensing window.
+5. The AP sends WBeacon 2 with the window positions.
+6. The ZC runs L-WSA. It picks slot length, CAP slots, CFP slots and beacon offset. It avoids the WiFi fragments that stay inside the window.
+7. Both sides transmit. The medium marks any pair of overlapping transmissions as failed.
+8. The metrics module reads the records and computes G_z, PDR_w, U_eff, jitter, moved FGs and maximum delay.
 
 ## 4. Numbers to remember
 
@@ -62,15 +63,15 @@ Say these points in this order.
 1. **Coordination works.** On Traffic I, Exp 1 delivers about 12 % of the demand. Exp 4 delivers 94 % at D_free = 31 ms and 87 % at 62 ms.
 2. **Each part matters.** Exp 3 stops at 0.67 because of the 40 ms NAV limit. Exp 5 reaches 1.00 but drops up to 8.1 % of WiFi airtime at 123 ms. Exp 4 and 6 keep the WiFi loss between 1 % and 5 % in our run.
 3. **Load matters.** As occupancy rises from 14 % to 88 %, Exp 1 falls from 0.87 to 0.12. Exp 4 falls from 0.98 to 0.89.
-4. **Sensing costs airtime on busy traffic.** G_z of Exp 4 falls from 0.94 to 0.62 when D_sensing grows from 10 ms to 100 ms on Traffic I. It stays flat on Traffic III.
+4. **Sensing costs airtime on busy traffic.** G_z of Exp 4 falls from 0.94 to 0.62 when D_sensing grows from 10 ms to 100 ms on Traffic I. It changes little on Traffic III (0.98 at D_free = 31 ms, 0.93 to 0.95 at 123 ms).
 5. **We do not match the paper at high demand.** At D_free = 123 ms we get 0.63, the paper gets 0.93 to 0.95. Say why: the windows plus the load need about 101 % of the cycle, the paper gives no MILP weights, and our traces are synthetic.
 
 Do not claim that we reproduce "zero WiFi loss". Our Exp 4 loses 1.3 % to 4.0 %.
 
 ## 6. Questions you may get
 
-**Why can WiFi destroy ZigBee frames, but ZigBee cannot hurt WiFi?**
-WiFi transmits at higher power and accesses the channel more aggressively, so a WiFi frame overwhelms a ZigBee frame (paper Sec. 1). Under heavy WiFi load ZigBee also starves, because it finds few usable gaps.
+**Why does ZigBee lose more than WiFi when they overlap?**
+WiFi transmits at higher power and accesses the channel more aggressively, so a WiFi frame overwhelms a ZigBee frame (paper Sec. 1). The paper cites ZigBee packet loss above 60 % and a WiFi throughput loss of 20 %. Our simulation uses the paper's simple rule: an overlap marks both frames as failed. ZigBee still loses more, because WiFi occupies most of the channel time.
 
 **Why does ZigBee fail under heavy WiFi traffic even with CSMA/CA?**
 At 88 % occupancy the gaps are short (5.3 ms mean in Traffic I). A ZigBee packet needs backoff slots, the packet and the ACK. Many gaps are too short, and a packet that starts in a gap can still be hit by the next WiFi frame.
@@ -85,7 +86,7 @@ A set of WiFi transmissions that are close in time. The AP moves FGs as units, b
 The AP switches to spectrum sensing mode in this window to detect the ZBeacon. The paper reserves a fixed sensing window for reliable demand reporting (Sec. 4.3). We make the constraint hard: no WiFi FG may overlap it, because a lost ZBeacon breaks the loop.
 
 **Why a MILP and not a simple rule?**
-The AP must choose several things together: which FGs move, how far, which ones wait, and where both windows go. The objective has four competing costs. A MILP solves this exactly for a small number of FGs. The paper also gives a simple gap-based alternative, and we use it as a fallback.
+The AP must choose several things together: which FGs move, how far, which ones wait, and where both windows go. The objective has four competing costs. A MILP seeks an optimal schedule for a small number of FGs. The solver can stop at its time limit before it proves optimality (432 cycles in the reference run). The paper also gives a simple gap-based alternative, and we use it as a fallback.
 
 **Explain Big-M.**
 Take the rule "FG k must end before the window starts, or start after the window ends". A binary variable w picks one side. For each side we write a constraint with M × (something that is 0 or 1) added to the loose side. When the side is not chosen, M makes the constraint always true.

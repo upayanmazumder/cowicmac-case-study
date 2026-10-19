@@ -21,7 +21,7 @@ The paper names two causes (Sec. 1):
 
 Earlier fixes fall in two groups. Opportunistic schemes only use the gaps that exist. Explicit schemes such as ECC reserve the channel with a CTS frame, but ECC does not know how much airtime ZigBee needs, and a CTS reservation (NAV) is limited to 40 ms (paper Sec. 5.3.1). Both groups treat the other network as a black box.
 
-**Idea of CoWiC-MAC.** The WiFi access point (AP) already schedules its stations. CoWiC-MAC lets the ZigBee coordinator (ZC) tell the AP how much airtime it needs. The AP then moves some WiFi traffic in time to open one clean window, and tells the ZC where the window is. The ZC reshapes its own superframe to fit the window. Contention is replaced by an agreed schedule.
+**Idea of CoWiC-MAC.** The WiFi access point (AP) already schedules its stations. CoWiC-MAC lets the ZigBee coordinator (ZC) tell the AP how much airtime it needs. The AP then moves some WiFi traffic in time to open one free window, and tells the ZC where the window is. The ZC reshapes its own superframe to fit the window. Contention is replaced by an agreed schedule.
 
 ## 2. Networking background used in this project
 
@@ -180,10 +180,10 @@ We ran 200 simulations of 60 s each (seed 42, `results/benchmark_results.csv`). 
 
 ### 6.1 What matches the paper
 
-- **Coordination helps, and the order of the schemes is right.** The uncoordinated scheme (Exp 1) delivers about 12 % of the ZigBee demand on Traffic I. Gap search (Exp 2) delivers 28 %. The NAV-limited ECC scheme (Exp 3) stops at 0.67 once D_free passes 40 ms. CoWiC-MAC (Exp 4 and 6) stays at 0.87 to 0.94 for D_free up to 62 ms.
+- **Coordination helps, and the order of the schemes is right.** The uncoordinated scheme (Exp 1) delivers about 12 % of the ZigBee demand on Traffic I. Gap search (Exp 2) delivers 28 %. The NAV-limited ECC scheme (Exp 3) stops at 0.67 once D_free passes 40 ms. CoWiC-MAC stays at 0.87 to 0.94 (Exp 4) and 0.94 to 0.97 (Exp 6) for D_free up to 62 ms.
 - **Rigid vacating gives full ZigBee gain but costs WiFi.** Exp 5 reaches G_z = 1.00 at every D_free, and its WiFi drop rate rises to 8.1 % at 123 ms. The paper reports the same direction (2.8 % at 123 ms).
 - **Load matters (Fig. 15).** When occupancy rises from 0.14 to 0.88, G_z of Exp 1 falls from 0.87 to 0.12 and G_z of Exp 2 falls from 1.00 to 0.28. Exp 4 falls only from 0.98 to 0.89. Exp 4 also loses no WiFi frames on the traces below 0.6 occupancy.
-- **A long sensing window costs ZigBee airtime on busy traffic (Fig. 16 and 17).** On Traffic I at D_free = 31 ms, G_z of Exp 4 falls from 0.94 to 0.62 when D_sensing grows from 10 to 100 ms. The paper reports 0.905 to 0.480 (it does not state D_free for this sentence). On Traffic III, G_z stays at 0.98 for every D_sensing, as the paper says for sparse traffic.
+- **A long sensing window costs ZigBee airtime on busy traffic (Fig. 16 and 17).** On Traffic I at D_free = 31 ms, G_z of Exp 4 falls from 0.94 to 0.62 when D_sensing grows from 10 to 100 ms. The paper reports 0.905 to 0.480 (it does not state D_free for this sentence). On Traffic III, G_z stays at 0.98 for every D_sensing at D_free = 31 ms. At D_free = 123 ms it is 0.95 for D_sensing up to 50 ms and 0.93 at 100 ms. The paper says that sparse traffic mainly changes the delay metrics, and this matches.
 - **Sparse traffic is easy (Fig. 14).** On Traffic III, Exp 4 has no WiFi loss and G_z of at least 0.95 at every D_free.
 
 ### 6.2 Where it does not match, and why
@@ -199,7 +199,7 @@ The WiFi drop rate of Exp 4 is not zero at any D_free on Traffic I, so the claim
 ## 7. Verification
 
 - 331 automated tests pass with 98.55 % line coverage. The suite includes checks of the MILP constraints, the L-WSA search against a brute-force search, the collision rule, the CTC channel and full multi-cycle runs.
-- `pytest -m slow` compares 30 s runs with every number the paper states. Points that differ are listed with their cause. A point that starts to pass makes the test fail, so the list stays correct.
+- `pytest -m slow` compares 30 s runs with every number the paper states. Points that differ are listed with their cause. A strict expected failure that starts to pass makes the test fail. Two points that sit close to their tolerance are not strict, so a change in them shows up only as an XPASS in the pytest report and needs a manual look.
 - The checks hold on every run: no two WiFi FGs overlap, no WiFi frame enters the sensing window, and ZigBee defers instead of transmitting into a WiFi fragment.
 
 ## 8. Limitations
