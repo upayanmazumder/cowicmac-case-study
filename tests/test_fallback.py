@@ -178,6 +178,16 @@ def test_cycle_shorter_than_sensing_window_is_flagged() -> None:
     assert result.t_free_end_ms == result.t_free_start_ms
 
 
+@pytest.mark.parametrize("rigid", [False, True])
+def test_carryover_prevents_false_sensing_reservation(rigid: bool) -> None:
+    """The remaining 12 ms cannot hold a 15 ms sensing window."""
+    fg = _fg(1, 0.0, 10.0)
+    scheduler = vacate_window if rigid else fallback_whitespace_expansion
+    result = scheduler([fg], 0.0, 20.0, 0.0, 15.0, channel_free_at=8.0)
+    assert result.solver_status == NO_SENSING_STATUS
+    assert result.t_sense_start_ms == result.t_sense_end_ms
+
+
 def test_fully_busy_cycle_extends_from_cycle_start() -> None:
     result = fallback_whitespace_expansion([_fg(1, 0.0, 50.0)], 0.0, 50.0, 10.0)
     assert (result.t_free_start_ms, result.t_free_end_ms) == (0.0, 0.0)
