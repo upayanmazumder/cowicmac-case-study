@@ -40,6 +40,7 @@ here.
 
 import math
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -67,6 +68,7 @@ from cowic.wifi.milp_scheduler import (
 from cowic.zigbee.coordinator import ZCState, ZigBeeCoordinator
 from cowic.zigbee.lwsa_adapter import (
     BACKOFF_SLOT_DURATION_MS,
+    PHY_HEADER_DURATION_MS,
     SYMBOL_DURATION_MS,
     LWSAAdapter,
     _min_cap_interval_ms,
@@ -355,6 +357,26 @@ def _pending_packets(config: SimulationConfig, packet_duration_ms: float) -> int
     return math.ceil(config.d_free_ms / _min_cap_interval_ms(packet_duration_ms))
 
 
+def _payload_ms(packet: ZigBeePacket) -> float:
+    """Payload airtime of one data packet: t_pk minus the PHY header (Eq. 7)."""
+    return max(0.0, packet.duration_ms - PHY_HEADER_DURATION_MS)
+
+
+def _demand_payloads(
+    packets: Sequence[ZigBeePacket], horizon_ms: float, demand_packets: int
+) -> list[float]:
+    """Payloads of the first ``demand_packets`` data packets before the horizon.
+
+    Only packets inside the demand the ZC reported count toward G_z, so a
+    scheme cannot score above 100 % by sending more than it asked for.
+    """
+    data = sorted(
+        (p for p in packets if not p.is_beacon and p.start_time_ms < horizon_ms),
+        key=lambda p: p.start_time_ms,
+    )
+    return [_payload_ms(p) for p in data[:demand_packets]]
+
+
 def _synthesize_zigbee_packets(
     superframe: SuperframeConfig,
     cycle_index: int,
@@ -537,7 +559,9 @@ class _RunStats:
             "zigbee_packets_attempted": float(self.zigbee_packets_attempted),
             "wifi_transmissions": float(total_wifi),
             "wifi_success_count": float(wifi_success),
-            "wifi_drop_rate": (wifi_failed / total_wifi) if total_wifi else 0.0,
+            # Share of WiFi transmissions lost to collisions. Not PDR_w:
+            # MetricsCalculator computes PDR_w from the final decisions.
+            "wifi_collision_share": (wifi_failed / total_wifi) if total_wifi else 0.0,
             "zigbee_transmissions": float(total_zigbee),
             "zigbee_success_count": float(zigbee_success),
             "zigbee_beacon_transmissions": float(zigbee_beacons),
@@ -558,6 +582,14 @@ class SimulationEngine:
         self.last_zigbee_state: ZCState | None = None
         self.last_zbeacon_windows: list[tuple[float, float]] = []
         self.last_demand_history: list[float] = []
+        # G_z inputs (Sec. 5.1, Issue #33): delivered ZigBee payload and the
+        # payload the same ZigBee model would deliver in the same windows
+        # with no WiFi. Payload is t_pk minus the PHY header (Eq. 7).
+        self.last_zigbee_delivered_payload_ms = 0.0
+        self.last_zigbee_ideal_payload_ms = 0.0
+        # Per cycle: (trans_id, payload_ms) of the data packets inside the
+        # reported demand, and that cycle's ideal payload.
+        self._zigbee_cycles: list[tuple[list[tuple[str, float]], float]] = []
         # One final WiFi scheduling decision per FG of the last run, with
         # delays from each FG's true original start (for MetricsCalculator):
         # its transmission, its drop, or its postponement if the run ended
@@ -619,6 +651,7 @@ class SimulationEngine:
         self.last_zbeacon_windows = []
         self.last_demand_history = []
         self._waiting = {}
+        self._zigbee_cycles = []
 
         env = simpy.Environment()
         env.process(
@@ -634,7 +667,31 @@ class SimulationEngine:
 
         self.last_medium = medium
         self.last_zigbee_state = zc.state
-        return stats.finalize(medium, horizon_ms)
+        self._total_zigbee_payload(medium)
+        summary = stats.finalize(medium, horizon_ms)
+        ideal = self.last_zigbee_ideal_payload_ms
+        summary["zigbee_payload_gain"] = (
+            self.last_zigbee_delivered_payload_ms / ideal if ideal > 0 else 0.0
+        )
+        return summary
+
+    def _total_zigbee_payload(self, medium: ChannelMedium) -> None:
+        """Sum delivered and ideal ZigBee payload over all cycles.
+
+        A packet counts as delivered if its final channel record succeeded.
+        Each cycle is capped at its ideal, so a scheme cannot exceed 100 %.
+        """
+        delivered = ideal = 0.0
+        for packets, cycle_ideal in self._zigbee_cycles:
+            cycle_delivered = sum(
+                payload
+                for trans_id, payload in packets
+                if medium.record(trans_id).success
+            )
+            delivered += min(cycle_delivered, cycle_ideal)
+            ideal += cycle_ideal
+        self.last_zigbee_delivered_payload_ms = delivered
+        self.last_zigbee_ideal_payload_ms = ideal
 
     def delivered_wifi_fg_ids(self) -> set[int]:
         """``fg_id``s whose registered WiFi transmission ultimately
@@ -789,9 +846,19 @@ class SimulationEngine:
                     outcome.schedule.t_sense_end_ms,
                     outcome.schedule.t_free_end_ms,
                 )
-                if sense_end > sense_start:
-                    fragments.append((sense_start, sense_end))
+                sensing_fragments = (
+                    [(sense_start, sense_end)] if sense_end > sense_start else []
+                )
+                fragments.extend(sensing_fragments)
                 superframe = zc.process_wbeacon(outcome.wbeacon, fragments)
+                # G_z ideal: the same L-WSA in the same window with no WiFi.
+                free_start = outcome.schedule.t_free_start_ms
+                free_end = outcome.schedule.t_free_end_ms
+                ideal_superframe = (
+                    zc.lwsa.adapt_superframe(free_start, free_end, sensing_fragments)
+                    if free_end > free_start
+                    else superframe
+                )
             else:
                 if adaptive:
                     # Handshake timeout exhausted (Issue #3): the ZC falls
@@ -804,7 +871,17 @@ class SimulationEngine:
                     config, outcome, cycle.start_ms, cycle.end_ms
                 )
                 superframe = _fixed_superframe(fixed_start_ms, fixed_end_ms)
+                # A fixed superframe ignores WiFi, so its ideal is itself.
+                ideal_superframe = superframe
 
+            ideal_payloads = _demand_payloads(
+                _synthesize_zigbee_packets(
+                    ideal_superframe, cycle.index, zc.lwsa.desired_packet_duration_ms
+                ),
+                horizon_ms,
+                pending_packets,
+            )
+            counted: list[tuple[str, float]] = []
             for packet in _synthesize_zigbee_packets(
                 superframe,
                 cycle.index,
@@ -814,12 +891,21 @@ class SimulationEngine:
                     continue
                 if not packet.is_beacon:
                     stats.zigbee_packets_attempted += 1
+                    if len(counted) < pending_packets:
+                        counted.append(
+                            (
+                                f"zigbee-{cycle.index}-{packet.packet_id}",
+                                _payload_ms(packet),
+                            )
+                        )
                 medium.register_transmission(
                     f"zigbee-{cycle.index}-{packet.packet_id}",
                     "zigbee_beacon" if packet.is_beacon else "zigbee",
                     packet.start_time_ms,
                     packet.duration_ms,
                 )
+
+            self._zigbee_cycles.append((counted, sum(ideal_payloads)))
 
             if bidirectional and outcome.wbeacon_delivered:
                 sense_start_ms = outcome.schedule.t_sense_start_ms
