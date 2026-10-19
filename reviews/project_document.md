@@ -67,6 +67,44 @@ Main fields:
 | `original_start_ms` | Start time before rescheduling   |
 | `qos_sensitive`     | Flag for delay-sensitive traffic |
 
+### Synthetic traffic traces: Table 5 against Fig. 9
+
+`traces/synthetic_generator.py` builds one trace per traffic profile. It draws FG durations and natural whitespaces from exponential distributions with the Table 5 means. For an exponential whitespace $W$ with mean $\mu$, $P(W > t) = e^{-t/\mu}$.
+
+The paper describes the whitespace in two ways. Table 5 gives the mean whitespace of each profile. Sec. 5.2 reads the Fig. 9 CCDF at 10 ms. The two descriptions do not agree.
+
+| Statistic                                          | Traffic I | Traffic II | Traffic III | Traffic IV |
+| -------------------------------------------------- | --------- | ---------- | ----------- | ---------- |
+| Table 5 mean whitespace $\mu$ (ms)                 | 5.3       | 9.2        | 34.3        | 142.3      |
+| Fig. 9 $P(W > 10\text{ ms})$ (Sec. 5.2 text)       | 79.2 %    | 65.9 %     | not given   | 4.1 %      |
+| Generator $e^{-10/\mu}$                            | 15.2 %    | 33.7 %     | 74.7 %      | 93.2 %     |
+| Generator, measured (seed 42, 600 s)               | 15.6 %    | 33.9 %     | 74.2 %      | 92.9 %     |
+| Markov upper bound $\mu / 10$                      | 53 %      | 92 %       | no limit    | no limit   |
+
+The measured row is `whitespace_ccdf_10ms` from `summarize_trace`. To get it, run `python -m traces.synthetic_generator --profile <name> --output <file>`. The defaults are seed 42 and 600 s.
+
+**Infeasibility proof.** Markov's inequality applies to every non-negative random variable: $P(W \ge t) \le E[W] / t$. Thus $P(W > 10\text{ ms}) \le \mu / 10$. For Traffic I, $\mu = 5.3$ ms gives $P(W > 10\text{ ms}) \le 53\%$. Fig. 9 gives 79.2 %. No whitespace distribution with the Table 5 mean of Traffic I can give the Fig. 9 value. A short/long mixture is also a non-negative distribution, so a mixture cannot match it either.
+
+Traffic II (65.9 % against a bound of 92 %) and Traffic IV (4.1 %) pass the bound. But for Traffic IV, the whitespaces longer than 10 ms must then have a mean of at least $(142.3 - 10 \cdot 0.959) / 0.041 \approx 3237$ ms. These gaps are more than three times the 1000 ms $T_{ZB}$ of Figs. 11 and 14.
+
+**Ordering conflict.** The paper orders the load of the profiles in two opposite ways:
+
+- Sec. 5.2 calls Traffic IV "high-intensity". It also says that the network goes "from sparse to saturation (Traffic I to IV)". The Fig. 9 tail values follow this order: they fall from Traffic I to Traffic IV.
+- The Table 5 FG durations and whitespaces give the opposite order. The occupancy is $39.2 / (39.2 + 5.3) \approx 88\%$ for Traffic I and $25.8 / (25.8 + 142.3) \approx 15\%$ for Traffic IV. Sec. 5.3 calls Traffic I "high-load" (Fig. 11) and Traffic III "low-load" and "sparse" (Fig. 14).
+
+If you swap the Fig. 9 labels (Fig. 9 Traffic I to Table 5 Traffic IV, and Fig. 9 Traffic IV to Table 5 Traffic I), the Markov bound no longer blocks a match. The paper does not state such a swap.
+
+**Chosen reading.** The repo uses the Table 5 order and keeps the exponential generator. It does not add a whitespace mixture. The reasons are:
+
+1. Table 5 is the only source that gives numbers for all four profiles.
+2. Sec. 5.3, Fig. 11, and Fig. 14 use the Table 5 order. The benchmark replicates these figures.
+3. In the Table 5 order, no distribution can match Fig. 9 for Traffic I (see the proof). A mixture can fit only Traffic II and Traffic IV, and the Traffic IV fit needs gaps longer than 3 s.
+4. A label swap of Fig. 9 is a guess. The paper does not support it.
+
+**Effects on the results.** The generator gives fewer long whitespaces under heavy load than Fig. 9 shows. On Traffic I, $P(W \ge 31\text{ ms}) = e^{-31/5.3} \approx 0.3\%$. Exp 1, Exp 2, and the whitespace expansion fallback use this tail directly. Thus the Exp 1 and Exp 2 values on Traffic I can be lower than the paper values. The generator is an i.i.d. renewal process. It does not reproduce the burstiness of Fig. 10.
+
+`tests/test_trace_generator.py` checks `whitespace_ccdf_10ms` against $e^{-10/\mu}$ for each profile. The absolute tolerance is 0.015. This is approximately 3.5 binomial standard errors on the smallest trace (Traffic IV, 3642 whitespaces). The test file also checks the Markov argument above.
+
 ### 3.2 MILP Scheduler (Equations 11-17)
 
 The AP solves this programme each cycle:
@@ -247,15 +285,42 @@ Exp 6 also changes CTC from bidirectional to WiFi-to-ZigBee.
 
 ### Parameter sweep
 
-| Parameter            | Values                                              |
-| -------------------- | --------------------------------------------------- |
-| $D_{\text{free}}$    | 31, 62, 93, 123 ms                                  |
-| $T_{ZB}$             | 1000, 2000, 5000 ms                                 |
-| Traffic profiles     | Traffic I and III by default; I–IV with `--traffic` |
-| $D_{\text{sensing}}$ | 10, 20, 50, 100 ms                                  |
-| Seeds                | 5 per point                                         |
+| Stage     | Paper figure | Experiments | Traffic          | $T_{ZB}$ (ms)    | $D_{\text{free}}$ (ms) | $D_{\text{sensing}}$ (ms) |
+| --------- | ------------ | ----------- | ---------------- | ---------------- | ---------------------- | ------------------------- |
+| Main      | Figs. 11–14  | Exp 1–6     | I and III        | 1000, 2000, 5000 | 31, 62, 93, 123        | Config value              |
+| Occupancy | Fig. 15      | Exp 1–6     | I, II, III, IV   | 1000             | 63                     | Config value              |
+| Sensing   | Figs. 16, 17 | Exp 4       | I and III        | 1000             | 31, 62, 93, 123        | 10, 20, 50, 100           |
 
-**Acceptance criterion (Issue #11):** Exp 4 at $D_{\text{free}} = 31$ ms and $T_{ZB} = 1000$ ms must achieve $G_z > 0.9$ and $PDR_w = 0$.
+Each run replays 600 s of trace by default, with 5 seeds. `--seeds N` and `--duration` make a smaller grid.
+
+**Acceptance:** `acceptance_report` checks every $G_z$ and $PDR_w$ value that Sec. 5.3.1 states for Exp 4, 5 and 6 (Fig. 11). The tolerance is ±0.02 for $G_z$ and ±0.005 for $PDR_w$.
+
+### Fidelity at high load (Issue #60)
+
+A 10 s run of Exp 4 on Traffic I with $D_{\text{free}} = 123$ ms (seed 42) gave $PDR_w$ = 2.57 % and $G_z$ = 0.549 before Issue #60. A cycle-by-cycle trace of that run found these causes:
+
+1. **ZigBee sent into sensed WiFi.** L-WSA counts only clear CAP attempts and CFP slots (Eq. 9/10), and Sec. 4.4 says that it "selectively utilizes only interference-free intervals". The engine still sent every attempt. Three WiFi FGs that the soft MILP kept in the window collided. The engine now defers an attempt that overlaps a sensed fragment, and the queued packet uses the next clear attempt.
+2. **Scheduler-only drops at the cycle end.** Eq. 4 asks a kept FG to end by $T_\text{end}$. An FG whose original airtime crosses $T_\text{end}$ can not do that. With $D_\text{free} = 0$ (no ZigBee window at all), 30 s of Traffic I lost 2 FGs that the unscheduled trace carries. A kept FG may now end after $T_\text{end}$, but not after its original end.
+3. **Postponed sets that do not fit.** Eq. 14 checks each postponed FG alone, so several FGs can each pass while the set does not fit the start of the next cycle. With only this check, the 10 s run dropped two FGs one cycle after their postponement. The MILP now also requires earliest-deadline-first feasibility of the postponed set (Sec. 4.3: a postponed FG "must remain schedulable in the next cycle"). With this check, neither FG is dropped. A unit test pins a two-FG case: each FG fits alone, the pair does not.
+4. **Solver time limit.** Three of ten cycles reached the 10 s limit. One of them returned drops that the proven optimum does not need, so the AP used the fallback, which dropped two QoS FGs. Fixed order binaries (an exact reduction) and a zero relative MIP gap now let that cycle prove optimality in about 2 s.
+
+After these fixes, the same 10 s run drops 1 FG instead of 3, and $PDR_w$ falls from 2.57 % to 0.92 %. The run has no WiFi collisions. $G_z$ is 0.515 (was 0.549). Two fixes limit ZigBee: the joint postponement check forbids some postponements, and ZigBee no longer sends into WiFi airtime. This run does not separate their shares. Without ZigBee windows (30 s, $D_\text{free} = 0$), the scheduler drops no FG.
+
+Two limits remain. They are properties of the scenario, not defects:
+
+- **Capacity.** Traffic I is about 88 % busy. $D_\text{free} = 123$ ms plus $D_\text{sensing} = 10$ ms adds 13.3 % of each 1000 ms cycle. The total is about 101 %, so no schedule can give full $G_z$ and zero WiFi loss at the same time. The paper reports both ($G_z$ 93.4–94.7 % with zero loss).
+- **Postponement cost.** The paper does not give $\lambda$, $\gamma$ or $\mu_\text{base}$. The repo uses $\lambda = 1$, $\gamma = 10$, $\mu_\text{base} = 100$. A postponed FG near a cycle end can still fail to fit the start of the next cycle, because the AP does not see later arrivals. $\mu_\text{base}$ sets the trade-off. Exp 4, Traffic I, 30 s, seed 42:
+
+| $\mu_\text{base}$ | $D_\text{free}$ (ms) | Dropped FGs | $PDR_w$ | $G_z$ |
+| ----------------- | -------------------- | ----------- | ------- | ----- |
+| 100               | 31                   | 3           | 1.35 %  | 0.919 |
+| 1000              | 31                   | 1           | 0.52 %  | 0.852 |
+| 10000             | 31                   | 0           | 0.04 %  | 0.709 |
+| 100               | 123                  | 9           | 2.68 %  | 0.508 |
+| 1000              | 123                  | 5           | 2.21 %  | 0.415 |
+| 10000             | 123                  | 0           | 0.10 %  | 0.165 |
+
+No value gives the paper's $G_z$ and zero loss together. The repo keeps $\mu_\text{base} = 100$ and does not tune it to the paper. `tests/test_paper_points.py` (`pytest -m slow`) records each deviation as a strict `xfail` with its cause.
 
 ---
 
@@ -263,16 +328,16 @@ Exp 6 also changes CTC from bidirectional to WiFi-to-ZigBee.
 
 | Metric           | Definition                                                      |
 | ---------------- | --------------------------------------------------------------- |
-| $G_z$            | ZigBee delivered payload / theoretical clean-spectrum capacity  |
-| $PDR_w$          | Discarded WiFi FG duration / total requested WiFi duration      |
+| $G_z$            | Delivered ZigBee data payload / payload of the demand in a clean window, every cycle |
+| $PDR_w$          | Airtime of deadline-dropped or collision-destroyed WiFi FGs / requested WiFi airtime |
 | $U_{\text{eff}}$ | Successful WiFi + ZigBee + control airtime / simulated duration |
 | Jitter           | Variation of WiFi FG delay                                      |
 | Max delay        | Largest WiFi FG delay in the run                                |
 
 ### Hypotheses under test
 
-1. Under heavy load, CoWiC-MAC achieves $G_z \ge 90\%$.
-2. CoWiC-MAC keeps $PDR_w = 0$ by deadline-aware postponement.
+1. Under heavy load, CoWiC-MAC achieves $G_z \ge 90\%$. Measured (60 s reference run): only at $D_\text{free} = 31$ ms, $G_z$ = 0.942 (see "Fidelity at high load").
+2. CoWiC-MAC keeps $PDR_w = 0$ by deadline-aware postponement. Measured: not on Traffic I with $\mu_\text{base} = 100$ (see the table above).
 3. Exp 5 changes the WiFi policy and ZigBee superframe. Exp 6 removes sensing and uses one-way WiFi-to-ZigBee CTC.
 
 ---

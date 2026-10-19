@@ -199,17 +199,17 @@ This abstraction is enough for MAC-layer coordination studies. It is not a PHY f
 
 Exp 6 also changes CTC from bidirectional to WiFi-to-ZigBee.
 
-Parameter sweep dimensions:
+The sweep has three stages:
 
-| Parameter            | Values                                              |
-| -------------------- | --------------------------------------------------- |
-| $D_{\text{free}}$    | 31, 62, 93, 123 ms                                  |
-| $T_{ZB}$             | 1000, 2000, 5000 ms                                 |
-| Traffic              | Traffic I and III by default; I–IV with `--traffic` |
-| $D_{\text{sensing}}$ | 10, 20, 50, 100 ms                                  |
-| Seeds                | 5                                                   |
+| Stage     | Paper figure | Experiments | Traffic                          | $T_{ZB}$ (ms)    | $D_{\text{free}}$ (ms) | $D_{\text{sensing}}$ (ms) |
+| --------- | ------------ | ----------- | -------------------------------- | ---------------- | ---------------------- | ------------------------- |
+| Main      | Figs. 11–14  | Exp 1–6     | I and III (I–IV with `--traffic`) | 1000, 2000, 5000 | 31, 62, 93, 123        | Config value              |
+| Occupancy | Fig. 15      | Exp 1–6     | I, II, III, IV                   | 1000             | 63                     | Config value              |
+| Sensing   | Figs. 16, 17 | Exp 4       | I (Fig. 16), III (Fig. 17)       | 1000             | 31, 62, 93, 123        | 10, 20, 50, 100           |
 
-Acceptance criterion: Exp 4 at $D_{\text{free}} = 31$ ms and $T_{ZB} = 1000$ ms must satisfy $G_z > 0.9$ and $PDR_w = 0$.
+Each stage uses 5 seeds. Each run replays 600 s of trace by default, as the paper traces in Fig. 10. The sweep warns when a run has fewer than 20 ZigBee cycles. The occupancy stage records the WiFi occupancy of each trace (busy airtime divided by run time). Fig. 15 uses this value as its x-axis.
+
+Acceptance criterion: every $G_z$ and $PDR_w$ value that Sec. 5.3.1 states for Exp 4, 5, and 6 (Fig. 11: Traffic I, $T_{ZB} = 1000$ ms). The tolerance is ±0.02 for $G_z$ and ±0.005 for $PDR_w$. `acceptance_report` in `scripts/run_benchmark_sweep.py` lists each point with the paper sentence.
 
 ---
 
@@ -217,19 +217,51 @@ Acceptance criterion: Exp 4 at $D_{\text{free}} = 31$ ms and $T_{ZB} = 1000$ ms 
 
 Hypothesis mapping:
 
-| Hypothesis | Claim                           | Simulation support                                                                             |
+| Hypothesis | Claim                           | Simulation support (reference run, Traffic I, $T_{ZB}$ = 1000 ms)                              |
 | ---------- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| H1         | $G_z \ge 90\%$ under heavy load | Exp 4 with MILP + L-WSA                                                                        |
-| H2         | $PDR_w = 0$                     | Deadline-aware MILP postponement                                                               |
+| H1         | $G_z \ge 90\%$ under heavy load | Exp 4 holds at 31 ms (0.942), not at 62, 93 and 123 ms (0.870, 0.800, 0.626)                |
+| H2         | $PDR_w = 0$                     | Not met: Exp 4 loses 1.3–4.0 % (postponement limit, see below)                                 |
 | H3         | Compare variant configurations  | Exp 5 changes the scheduler and ZigBee superframe. Exp 6 removes sensing and uses one-way CTC. |
 
-Observed quick-sweep acceptance point (Exp 4, Traffic I, $D_{\text{free}}=31$ ms, $T_{ZB}=1000$ ms):
+### Deviations from the base paper
 
-- $G_z = 0.929$
-- $PDR_w = 0.0000$
-- Result: PASS
+The table compares the paper values with `results/benchmark_results.csv`. This CSV comes from `python scripts/run_benchmark_sweep.py --duration 60 --seeds 1 --jobs 8`: 200 runs of 60 s, seed 42, all three stages. Fig. 11 points use Traffic I with $T_{ZB} = 1000$ ms (60 cycles per run). The paper replays 600 s traces, so this is a reference run, not a full reproduction. The values come from `acceptance_report`. Tolerance: ±0.02 for $G_z$, ±0.005 for $PDR_w$.
 
-This point meets the Issue #11 high-load acceptance rule. It does not by itself claim that every $D_{\text{free}}$ value exceeds 0.9.
+| Exp   | Metric  | $D_{\text{free}}$ (ms) | Paper (Sec. 5.3.1) | Simulated   | Result |
+| ----- | ------- | ---------------------- | ------------------ | ----------- | ------ |
+| Exp 4 | $G_z$   | 31                     | > 0.986            | 0.942       | FAIL   |
+| Exp 4 | $G_z$   | 62                     | 0.963              | 0.870       | FAIL   |
+| Exp 4 | $G_z$   | 123                    | 0.934–0.947        | 0.626       | FAIL   |
+| Exp 4 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.027, 0.040 | FAIL |
+| Exp 5 | $G_z$   | 31, 62, 123            | 1.000              | 1.000, 1.000, 1.000 | PASS |
+| Exp 5 | $PDR_w$ | 31                     | < 0.01             | 0.013       | PASS   |
+| Exp 5 | $PDR_w$ | 123                    | 0.028              | 0.081       | FAIL   |
+| Exp 6 | $G_z$   | 31                     | > 0.986            | 0.967       | PASS   |
+| Exp 6 | $G_z$   | 62                     | 0.963              | 0.937       | FAIL   |
+| Exp 6 | $G_z$   | 123                    | 0.934–0.947        | 0.666       | FAIL   |
+| Exp 6 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.027, 0.045 | FAIL |
+
+Result: FAIL. 5 of 17 points pass.
+
+Other paper values from the same run:
+
+| Point                                     | Paper        | Simulated |
+| ----------------------------------------- | ------------ | --------- |
+| Exp 1 $G_z$, Traffic I, 31 ms             | 1.3 %        | 13.2 %    |
+| Exp 1 $PDR_w$, Traffic I, 123 ms          | 9.7 %        | 14.0 %    |
+| Exp 2 $G_z$, Traffic I, 31 / 123 ms       | 55.8 / 8.5 % | 47.7 / 27.5 % |
+| Exp 2 $PDR_w$, Traffic I, 123 ms          | 7.6 %        | 0.0 %     |
+| Exp 1 $G_z$, Traffic III, 31 / 123 ms     | 54.3 / 36.1 % | 68.3 / 68.3 % |
+| Exp 2 $G_z$ / $PDR_w$, Traffic III, 123 ms | 93.9 / 1.4 % | 99.4 / 0.0 % |
+| Exp 4 $G_z$, Traffic I, $D_{\text{sensing}}$ 10 → 100 ms (paper: $D_{\text{free}}$ not stated; sim: 31 ms) | 90.5 → 48.0 % | 94.2 → 61.9 % |
+
+Causes (`reviews/project_document.md` §7, "Fidelity at high load"):
+
+1. Traffic I is about 88 % busy. At 123 ms the free and sensing windows need 13.3 % more, so the cycle needs about 101 % of its airtime. No schedule can give full $G_z$ with zero WiFi loss there.
+2. The paper gives no values for $\lambda$, $\gamma$ or $\mu_{\text{base}}$. With $\mu_{\text{base}} = 100$, the MILP postpones FGs near a cycle end that later do not fit the next cycle. $\mu_{\text{base}} = 10000$ removes these drops but lowers $G_z$ (0.709 at 31 ms in a 30 s run). The repo does not tune the weights to the paper.
+3. Exp 2 drops no WiFi FG because its ZigBee superframe uses only whitespace that the AP notifies. The paper does not say how Exp 2 loses 7.6 % of WiFi airtime.
+
+The qualitative trends hold. $G_z$ falls as WiFi occupancy grows (Fig. 15). A longer sensing window lowers $G_z$ on Traffic I but not on Traffic III (Figs. 16 and 17). Exp 3 stops at the 40 ms NAV limit. `tests/test_paper_points.py` (`pytest -m slow`) records each deviation as a strict `xfail`.
 
 ---
 

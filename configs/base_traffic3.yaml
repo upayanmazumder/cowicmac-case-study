@@ -1,5 +1,5 @@
 name: "Traffic_III_Low_Load"
-description: "Sparse WiFi traffic profile with low channel contention"
+description: "Sparse WiFi traffic profile with low channel contention (16.0 ms FGs, 34.3 ms whitespace). Uses the Table 5 values and the Sec. 5.3 low-load reading (Fig. 14). Exponential whitespaces give P(W > 10 ms) = exp(-10/34.3) = 74.7 percent. Sec. 5.2 gives no Fig. 9 value for this profile. See reviews/project_document.md section 3.1."
 avg_fg_duration_ms: 16.0
 avg_whitespace_ms: 34.3
 qos_sensitive_ratio: 0.274

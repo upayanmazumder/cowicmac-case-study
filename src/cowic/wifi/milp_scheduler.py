@@ -117,6 +117,24 @@ def _postponement_cost(fg: FrameGroup, t_end_ms: float, mu_base: float) -> float
     return mu_base / max(EPSILON_MS, slack)
 
 
+def _must_precede(
+    first: FrameGroup, second: FrameGroup, t_start_ms: float, t_end_ms: float
+) -> bool:
+    """True if ``first`` must end before ``second`` starts when both are sent.
+
+    ``first`` must end by its deadline and by the cycle end (or its original
+    end, if that is later), and ``second`` can not start before
+    ``max(a, T_start)``. If the latest start of ``first`` is not after that,
+    the reverse order is infeasible. The Eq. 15 order binary for the pair is
+    then fixed, which removes it from the search without changing the
+    optimum.
+    """
+    cycle_end = max(t_end_ms, first.original_start_ms + first.duration_ms)
+    latest_first = min(first.deadline_ms, cycle_end) - first.duration_ms
+    earliest_second = max(second.arrival_time_ms, t_start_ms)
+    return second.duration_ms > 0 and latest_first <= earliest_second
+
+
 class MILPScheduler:
     """Solves the Frame Group rescheduling problem via PuLP.
 
@@ -225,10 +243,18 @@ class MILPScheduler:
             fg.fg_id: pulp.LpVariable(f"w_sense_{fg.fg_id}", cat="Binary")
             for fg in frame_groups
         }
-        b_order = {
-            (a.fg_id, b.fg_id): pulp.LpVariable(f"b_{a.fg_id}_{b.fg_id}", cat="Binary")
-            for a, b in combinations(frame_groups, 2)
-        }
+        # Eq. 15 order binaries, only for pairs whose order is not already
+        # forced by arrival times and deadlines (see _must_precede).
+        forced: dict[tuple[int, int], bool] = {}
+        b_order: dict[tuple[int, int], pulp.LpVariable] = {}
+        for a, b in combinations(frame_groups, 2):
+            key = (a.fg_id, b.fg_id)
+            if _must_precede(a, b, t_start_ms, t_end_ms):
+                forced[key] = True
+            elif _must_precede(b, a, t_start_ms, t_end_ms):
+                forced[key] = False
+            else:
+                b_order[key] = pulp.LpVariable(f"b_{a.fg_id}_{b.fg_id}", cat="Binary")
         # Selects which window comes first when neither overlaps WiFi
         # (Eq. 3/13): b_ws=0 -> free window ends before sensing starts;
         # b_ws=1 -> sensing window ends before free starts.
@@ -304,11 +330,50 @@ class MILPScheduler:
                 # Soft mode postpones only FGs that can still meet their
                 # deadline next cycle. Hard mode must vacate the window at
                 # any cost, so a vacated FG may miss its deadline (a drop).
+                # The per-FG test is Eq. 14. The joint test below covers
+                # the whole postponed set.
                 prob += t_end_ms + d <= fg.deadline_ms + big_m * (
                     1 - p[fid] + drop[fid]
                 )
                 prob += drop[fid] <= p[fid]  # A dropped FG is not sent now.
-            prob += s + d <= t_end_ms + big_m * p[fid]
+        if not self.hard_free_window:
+            # Sec. 4.3 (2): a postponed FG "must remain schedulable in the
+            # next cycle". Eq. 14 checks each FG alone, so a set of FGs can
+            # each pass while the set cannot fit. Every postponed FG then
+            # competes for the same start of the next cycle. Require the
+            # kept postponed set to be feasible in earliest-deadline-first
+            # order: the FGs due no later than e_k must finish by e_k.
+            # The next cycle is free only once every kept FG has ended,
+            # which can be after T_end (see the cycle-end rule below).
+            t_next = pulp.LpVariable("T_next_free", lowBound=t_end_ms)
+            for fg in frame_groups:
+                prob += (
+                    t_next >= s_prime[fg.fg_id] + fg.duration_ms - big_m * p[fg.fg_id]
+                )
+            edf = sorted(frame_groups, key=lambda fg: (fg.deadline_ms, fg.fg_id))
+            total_ms = sum(fg.duration_ms for fg in frame_groups)
+            max_ms = max(fg.duration_ms for fg in frame_groups)
+            for rank, fg in enumerate(edf):
+                fid = fg.fg_id
+                earlier = edf[: rank + 1]
+                m_edf = max(0.0, t_end_ms + max_ms + total_ms - fg.deadline_ms) + 1.0
+                prob += t_next + pulp.lpSum(
+                    other.duration_ms * (p[other.fg_id] - drop[other.fg_id])
+                    for other in earlier
+                ) <= fg.deadline_ms + m_edf * (1 - p[fid] + drop[fid])
+        for fg in frame_groups:
+            fid = fg.fg_id
+            s = s_prime[fid]
+            d = fg.duration_ms
+            # Eq. 4 asks a kept FG to end by T_end. An FG whose original
+            # airtime already crosses T_end can not meet that at its original
+            # start. The trace (and Exp 1) sends it across the boundary, so
+            # the AP may too, but it may not end later than originally.
+            # Otherwise the scheduler alone postpones and drops FGs that the
+            # unscheduled trace carries (Issue #60: 2 drops in 30 s of
+            # Traffic I with D_free = 0).
+            cycle_end = max(t_end_ms, fg.original_start_ms + d)
+            prob += s + d <= cycle_end + big_m * p[fid]
 
             # Overlap avoidance (Eq. 16/17 intent, corrected disjunctive
             # Big-M encoding). The paper's Appendix A text, as extracted
@@ -346,13 +411,25 @@ class MILPScheduler:
         # Inter-FG conflict avoidance (Eq. 15): only applies to FGs that are
         # both scheduled this cycle (postponed FGs are exempt via P_k, P_j).
         for a, b in combinations(frame_groups, 2):
-            b_var = b_order[(a.fg_id, b.fg_id)]
+            key = (a.fg_id, b.fg_id)
             sa, sb = s_prime[a.fg_id], s_prime[b.fg_id]
             pa, pb = p[a.fg_id], p[b.fg_id]
+            if key in forced:
+                if forced[key]:
+                    prob += sa + a.duration_ms <= sb + big_m * (pa + pb)
+                else:
+                    prob += sb + b.duration_ms <= sa + big_m * (pa + pb)
+                continue
+            b_var = b_order[key]
             prob += sa + a.duration_ms <= sb + big_m * (1 - b_var + pa + pb)
             prob += sb + b.duration_ms <= sa + big_m * (b_var + pa + pb)
 
-        solver = self.solver or pulp.HiGHS(msg=False, timeLimit=self.time_limit_s)
+        # The drop price is large, so HiGHS's default relative gap (1e-4)
+        # can accept a schedule that is worse than optimal by more than a
+        # full FG overlap once a drop occurs. Use an absolute gap instead.
+        solver = self.solver or pulp.HiGHS(
+            msg=False, timeLimit=self.time_limit_s, gapRel=0.0, gapAbs=1e-3
+        )
         prob.solve(solver)
         status = pulp.LpStatus[prob.status]
         if status == OPTIMAL_STATUS and prob.sol_status != pulp.LpSolutionOptimal:

@@ -11,6 +11,7 @@ from cowic.models.frame_group import FrameGroup
 from traces.playback import frame_groups_from_frame, iter_cycles, load_trace
 from traces.synthetic_generator import (
     PROFILE_CONFIGS,
+    WHITESPACE_CCDF_THRESHOLD_MS,
     TrafficProfile,
     build_trace,
     generate_trace,
@@ -20,6 +21,13 @@ from traces.synthetic_generator import (
 )
 
 DURATION_S = 600.0
+
+# Sec. 5.2 text values of Fig. 9: P(whitespace > 10 ms). Traffic III is not quoted.
+FIG9_CCDF_10MS: dict[str, float] = {
+    "Traffic_I": 0.792,
+    "Traffic_II": 0.659,
+    "Traffic_IV": 0.041,
+}
 
 
 def _profile(**overrides: object) -> TrafficProfile:
@@ -57,6 +65,28 @@ def test_trace_matches_table5_statistics(name: str) -> None:
         profile.avg_delay_bound_ms, abs=4.0
     )
     assert stats["occupancy"] == pytest.approx(profile.occupancy, abs=0.04)
+
+
+@pytest.mark.parametrize("name", list(PROFILE_CONFIGS))
+def test_whitespace_ccdf_matches_exponential_tail(name: str) -> None:
+    # Seed 42, 600 s: at least 3,600 gaps per profile, so the binomial standard
+    # error is at most 0.0043. The tolerance of 0.015 is about 3.5 sigma.
+    profile = load_profile(name)
+    stats = summarize_trace(build_trace(profile, DURATION_S, seed=42), DURATION_S)
+    expected = np.exp(-WHITESPACE_CCDF_THRESHOLD_MS / profile.avg_whitespace_ms)
+    assert stats["whitespace_ccdf_10ms"] == pytest.approx(expected, abs=0.015)
+
+
+def test_fig9_tail_is_infeasible_for_traffic_i_mean() -> None:
+    # Markov: P(W > 10) <= E[W] / 10 for any non-negative W. Fig. 9 exceeds this
+    # bound for the Table 5 Traffic I mean, so no generator can match both.
+    bounds = {
+        name: load_profile(name).avg_whitespace_ms / WHITESPACE_CCDF_THRESHOLD_MS
+        for name in FIG9_CCDF_10MS
+    }
+    assert FIG9_CCDF_10MS["Traffic_I"] > bounds["Traffic_I"]
+    assert FIG9_CCDF_10MS["Traffic_II"] <= bounds["Traffic_II"]
+    assert FIG9_CCDF_10MS["Traffic_IV"] <= bounds["Traffic_IV"]
 
 
 def test_traffic_i_is_heaviest_load() -> None:

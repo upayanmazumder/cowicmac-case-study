@@ -184,18 +184,18 @@ def test_schedule_postponed_fg_reported_at_cycle_end() -> None:
     delay term. Reporting must not leak that phantom position: a
     postponed FG is always reported at t_end_ms, matching every other
     postponement in the codebase (defer_around_window, _carryover_busy)."""
-    scheduler = MILPScheduler()
-    # Arrives at 95 needing 20ms: s >= 95 and s + 20 <= t_end_ms (100) is
-    # impossible, forcing postponement regardless of cost weights.
-    late_fg = _fg(1, start=95.0, duration=20.0, deadline=300.0, arrival=95.0)
+    scheduler = HardConstraintMILPScheduler()
+    # The rigid free window fills the whole cycle, so the FG must be
+    # vacated to the next cycle regardless of cost weights.
+    late_fg = _fg(1, start=50.0, duration=20.0, deadline=300.0, arrival=50.0)
     result = scheduler.schedule(
-        [late_fg], d_free_ms=0.0, d_sensing_ms=0.0, t_start_ms=0.0, t_end_ms=100.0
+        [late_fg], d_free_ms=100.0, d_sensing_ms=0.0, t_start_ms=0.0, t_end_ms=100.0
     )
     assert result.solver_status == "Optimal"
     decision = result.decisions[0]
     assert decision.is_postponed is True
     assert decision.scheduled_start_ms == 100.0
-    assert decision.delay_ms == 5.0
+    assert decision.delay_ms == 50.0
 
 
 def test_schedule_overlaps_the_cheaper_fg_instead_of_moving_either() -> None:
@@ -330,17 +330,21 @@ def test_hard_mode_never_overlaps_free_window_under_load() -> None:
         _fg(i, start=i * 12.0, duration=10.0, deadline=i * 12.0 + 10.0 + bound)
         for i, bound in enumerate([5.0, 50.0, 5.0, 100.0, 5.0, 50.0, 5.0, 100.0])
     ]
-    result = HardConstraintMILPScheduler().schedule(fgs, 62.0, 10.0, 0.0, 120.0)
+    # Checks the overlap rule, not solver speed: no time limit, so a loaded
+    # machine can not turn the proof into a time-limited result.
+    scheduler = HardConstraintMILPScheduler(time_limit_s=None)
+    result = scheduler.schedule(fgs, 62.0, 10.0, 0.0, 120.0)
     assert result.solver_status == "Optimal"
     assert _free_window_overlap(fgs, result) == pytest.approx(0.0, abs=1e-3)
 
 
 def test_moving_earlier_is_penalized_like_moving_later() -> None:
-    """Issue #36: Eq. 1 penalizes |s'_k - s_k|. The FG must end by the cycle
-    end (100 ms), so the cheapest start is 90 ms, not 0 ms."""
-    fg = FrameGroup(1, 0.0, 10.0, 500.0, 95.0, False)
-    result = MILPScheduler(lambda_weight=1.0, mu_base=1e6).schedule(
-        [fg], 0.0, 0.0, 0.0, 100.0
+    """Issue #36: Eq. 1 penalizes |s'_k - s_k|. The rigid 90 ms window must
+    clear the FG (originally at 50 ms), so it moves to 90 ms (+40 ms) rather
+    than to 0 ms (-50 ms). A one-sided penalty would make 0 ms free."""
+    fg = FrameGroup(1, 0.0, 10.0, 500.0, 50.0, False)
+    result = HardConstraintMILPScheduler(lambda_weight=1.0, mu_base=1e6).schedule(
+        [fg], 90.0, 0.0, 0.0, 100.0
     )
     assert result.solver_status == OPTIMAL_STATUS
     (decision,) = result.decisions
@@ -405,3 +409,29 @@ def test_drop_penalty_keeps_fg_when_overlap_is_cheaper() -> None:
     assert result.solver_status == OPTIMAL_STATUS
     assert not result.decisions[0].is_postponed
     assert result.t_free_start_ms < fg.duration_ms
+
+
+def test_postponed_set_must_fit_the_next_cycle_together() -> None:
+    """Issue #60: each FG alone could start at T_end = 100 ms and finish by
+    its 140 ms deadline, but both together need 160 ms. Postponing both was
+    cheaper than any overlap, and the second FG was then dropped one cycle
+    later. At most one FG may now be postponed."""
+    fgs = [
+        FrameGroup(1, 0.0, 30.0, 140.0, 0.0, False),
+        FrameGroup(2, 0.0, 30.0, 140.0, 30.0, False),
+    ]
+    result = MILPScheduler().schedule(fgs, 90.0, 0.0, 0.0, 100.0)
+    assert result.solver_status == OPTIMAL_STATUS
+    assert sum(d.is_postponed for d in result.decisions) == 1
+
+
+def test_fg_crossing_cycle_end_keeps_its_original_airtime() -> None:
+    """Issue #60: the trace sends this FG over the cycle end (90-110 ms). It
+    can not end by T_end = 100 ms, and 100 + 20 > 115 rules out postponing,
+    so the old model dropped an FG that needs no rescheduling at all."""
+    fg = FrameGroup(1, 90.0, 20.0, 115.0, 90.0, False)
+    result = MILPScheduler().schedule([fg], 0.0, 0.0, 0.0, 100.0)
+    assert result.solver_status == OPTIMAL_STATUS
+    (decision,) = result.decisions
+    assert not decision.is_postponed
+    assert decision.scheduled_start_ms == pytest.approx(90.0)

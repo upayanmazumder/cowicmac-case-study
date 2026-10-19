@@ -1,5 +1,5 @@
 name: "Traffic_I_High_Load"
-description: "Dense WiFi traffic profile with about 88 percent channel occupancy (39.2 ms FGs, 5.3 ms whitespace)"
+description: "Dense WiFi traffic profile with about 88 percent channel occupancy (39.2 ms FGs, 5.3 ms whitespace). Uses the Table 5 values and the Sec. 5.3 high-load reading (Fig. 11). Exponential whitespaces give P(W > 10 ms) = exp(-10/5.3) = 15.2 percent. Sec. 5.2 (Fig. 9) gives 79.2 percent. Markov's inequality limits P(W > 10 ms) to 5.3/10 = 53 percent for any whitespace with this mean, so no generator can match Fig. 9. See reviews/project_document.md section 3.1."
 avg_fg_duration_ms: 39.2
 avg_whitespace_ms: 5.3
 qos_sensitive_ratio: 0.073

@@ -68,8 +68,8 @@ from cowic.wifi.milp_scheduler import (
 from cowic.zigbee.coordinator import ZCState, ZigBeeCoordinator
 from cowic.zigbee.lwsa_adapter import (
     BACKOFF_SLOT_DURATION_MS,
+    BEACON_DURATION_MS,
     PHY_HEADER_DURATION_MS,
-    SYMBOL_DURATION_MS,
     LWSAAdapter,
     _min_cap_interval_ms,
     _packet_duration_ms,
@@ -99,7 +99,7 @@ TRACE_DATA_DIR = (
 _FIXED_CAP_SLOTS = 8
 _FIXED_CFP_SLOTS = 7
 _FIXED_SLOT_DURATION_MS = 0.96 * 4  # BASE_SLOT_DURATION_MS * 2**2
-_ZIGBEE_BEACON_DURATION_MS = SYMBOL_DURATION_MS * 30
+_ZIGBEE_BEACON_DURATION_MS = BEACON_DURATION_MS
 
 
 @dataclass(frozen=True)
@@ -382,6 +382,7 @@ def _synthesize_zigbee_packets(
     cycle_index: int,
     desired_packet_duration_ms: float,
     pending_packets: int | None = None,
+    busy_fragments: Sequence[tuple[float, float]] = (),
 ) -> list[ZigBeePacket]:
     """Synthesize beacon, CAP attempts, and CFP payloads for one superframe.
 
@@ -389,7 +390,22 @@ def _synthesize_zigbee_packets(
     :class:`~cowic.sim.channel_medium.ChannelMedium`'s real overlap check
     against registered WiFi transmissions - this only lays out *when* each
     node attempts to transmit.
+
+    ``busy_fragments`` are airtime intervals the ZC sensed as occupied by
+    WiFi (Section 4.4). L-WSA "selectively utilizes only interference-free
+    intervals" and counts only clear CAP attempts and CFP slots (Eq. 9/10).
+    A data attempt that would overlap a busy fragment is therefore deferred
+    (clear channel assessment fails). It sends nothing, and the queued
+    packet waits for the next clear attempt.
     """
+
+    def busy(start_ms: float, duration_ms: float) -> bool:
+        end_ms = start_ms + duration_ms
+        return any(
+            start_ms < frag_end and frag_start < end_ms
+            for frag_start, frag_end in busy_fragments
+        )
+
     if superframe.slot_duration_ms <= 0 or (
         superframe.cap_slots == 0 and superframe.cfp_slots == 0
     ):
@@ -435,6 +451,8 @@ def _synthesize_zigbee_packets(
         slot_start_ms = (
             cap_start_ms + attempt * min_interval_ms + 2 * BACKOFF_SLOT_DURATION_MS
         )
+        if busy(slot_start_ms, packet_duration_ms):
+            continue
         packets.append(
             ZigBeePacket(
                 packet_id=cycle_index * 1000 + len(packets),
@@ -460,6 +478,8 @@ def _synthesize_zigbee_packets(
             # follows it; t_pk leaves at least t_ta + t_ack (0.544 ms) of
             # slot free, which covers the 0.48 ms beacon.
             slot_start_ms += beacon_duration_ms
+        if busy(slot_start_ms, packet_duration_ms):
+            continue
         packets.append(
             ZigBeePacket(
                 packet_id=cycle_index * 1000 + len(packets),
@@ -840,6 +860,7 @@ class SimulationEngine:
                 on_air.append((fg, start))
                 self._finalize(final, stats)
 
+            sensed_busy: list[tuple[float, float]] = []
             if adaptive and outcome.wbeacon_delivered and outcome.wbeacon is not None:
                 fragments = _residual_wifi_fragments(
                     outcome.schedule,
@@ -865,6 +886,7 @@ class SimulationEngine:
                 )
                 fragments.extend(sensing_fragments)
                 superframe = zc.process_wbeacon(outcome.wbeacon, fragments)
+                sensed_busy = fragments
             else:
                 if adaptive:
                     # Handshake timeout exhausted (Issue #3): the ZC falls
@@ -881,9 +903,10 @@ class SimulationEngine:
             # The granted window can be shorter or empty after a failed solve.
             ideal_start = cycle.start_ms
             ideal_end = min(cycle.end_ms, ideal_start + config.d_free_ms)
+            # With no demand, _fixed_superframe returns an empty superframe.
             ideal_superframe = (
                 zc.lwsa.adapt_superframe(ideal_start, ideal_end, [])
-                if adaptive
+                if adaptive and ideal_end > ideal_start
                 else _fixed_superframe(ideal_start, ideal_end)
             )
 
@@ -899,6 +922,7 @@ class SimulationEngine:
                 superframe,
                 cycle.index,
                 zc.lwsa.desired_packet_duration_ms,
+                busy_fragments=sensed_busy,
             ):
                 if packet.start_time_ms >= horizon_ms:
                     continue

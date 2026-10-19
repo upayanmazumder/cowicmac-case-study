@@ -619,7 +619,7 @@ def test_sensing_window_contains_zbeacon_and_reduces_gain_under_load(
             scenario_name=f"Test_Sensing_{sensing_ms:g}",
             duration_s=3.0,
             wifi_trace_path=short_trace,
-            d_free_ms=31.0,
+            d_free_ms=62.0,
             d_sensing_ms=sensing_ms,
             zigbee_period_ms=1000.0,
             wifi_scheduling="milp_soft_constraint",
@@ -681,6 +681,25 @@ def test_zigbee_synthesis_uses_t_min_and_packet_airtime() -> None:
 
     limited = _synthesize_zigbee_packets(config, 1, 2.0, pending_packets=3)
     assert sum(not packet.is_beacon for packet in limited) == 3
+
+
+def test_sensed_wifi_defers_zigbee_attempts_without_losing_queue() -> None:
+    """Issue #60: L-WSA counts only clear attempts (Eq. 9/10), so a node
+    must not transmit into sensed WiFi airtime. The queued packet moves to
+    the next clear attempt instead of being lost."""
+    config = LWSAAdapter().adapt_superframe(0.0, 62.0, [])
+    clear = _synthesize_zigbee_packets(config, 0, 2.0, pending_packets=10)
+    data = [p for p in clear if not p.is_beacon]
+    busy = (data[1].start_time_ms, data[3].start_time_ms + data[3].duration_ms)
+    deferred = _synthesize_zigbee_packets(
+        config, 0, 2.0, pending_packets=10, busy_fragments=[busy]
+    )
+    sent = [p for p in deferred if not p.is_beacon]
+    assert len(sent) == 10
+    assert all(
+        p.start_time_ms + p.duration_ms <= busy[0] or p.start_time_ms >= busy[1]
+        for p in sent
+    )
 
 
 def test_beacon2_does_not_overlap_first_cfp_packet_without_cap() -> None:
@@ -853,3 +872,35 @@ def test_exp5_keeps_the_full_window_every_cycle(
     assert engine.last_free_windows
     for start, end in engine.last_free_windows:
         assert end - start == pytest.approx(62.0)
+
+
+def test_exp4_high_demand_causes_no_wifi_collisions(
+    short_trace: Path, tmp_path: Path
+) -> None:
+    """Issue #60: on Traffic I at D_free = 123 ms, CAP attempts used to land
+    on WiFi FGs that the soft MILP left in the window (0.26 % of WiFi
+    airtime collided). L-WSA sensing now defers those attempts."""
+    config = SimulationConfig.from_yaml(
+        Path("configs/exp4_cowic_full.yaml"), trace_dir=tmp_path
+    )
+    _, _, metrics = _run_measured(
+        replace(config, duration_s=3.0, d_free_ms=123.0, wifi_trace_path=short_trace)
+    )
+    assert metrics.wifi_collision_rate == 0.0
+    assert metrics.wifi_drop_rate == 0.0
+
+
+def test_adaptive_run_without_zigbee_demand(short_trace: Path) -> None:
+    """Exp 6 with D_free = 0: the scheduler alone must lose no WiFi FG, and
+    the clean-window ideal must accept an empty demand."""
+    config = replace(
+        _exp4_config(short_trace),
+        duration_s=3.0,
+        d_free_ms=0.0,
+        d_sensing_ms=0.0,
+        ctc_direction="wifi_to_zigbee",
+    )
+    engine, summary, metrics = _run_measured(config)
+    assert summary["dropped_frame_groups"] == 0.0
+    assert metrics.wifi_drop_rate == 0.0
+    assert engine.last_zigbee_ideal_payload_ms == 0.0

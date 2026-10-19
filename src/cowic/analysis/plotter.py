@@ -5,18 +5,22 @@ CSV (one row per simulation run, as produced by a benchmark sweep over
 :class:`~cowic.sim.simulation_engine.SimulationConfig` /
 :class:`~cowic.analysis.metrics.MetricsCalculator`):
 
-* **Figs. 11/14** ("Performance Evaluation ... under High/Low-Load WiFi
+* **Figs. 11-14** ("Performance Evaluation ... under High/Low-Load WiFi
   Traffic ... with T_ZB = ..."): six metric panels against a ``d_free_ms``
   sweep, one line per experiment (Exp 1-6).
-* **Fig. 16** ("Performance Evaluation ... with Various D_sensing
-  Settings ..."): the same six panels against a ``d_sensing_ms`` sweep
-  (Exp 4-1..4-4).
+* **Fig. 15** ("Performance Evaluation ... under Varying WiFi Channel
+  Occupancy Levels"): the same six panels against the WiFi occupancy of
+  each traffic trace, at T_ZB = 1000 ms and D_free = 63 ms.
+* **Figs. 16/17** ("Performance Evaluation ... with Various D_sensing
+  Settings under WiFi Traffic I/III"): the same six panels against a
+  ``d_sensing_ms`` sweep (Exp 4-1..4-4).
 
 Expected CSV columns: ``experiment_id`` (e.g. ``"Exp_1"``), ``d_free_ms``,
 ``d_sensing_ms``, and the six :class:`~cowic.analysis.metrics.SimulationMetrics`
 fields (``zigbee_gain_ratio``, ``wifi_drop_rate``, ``spectrum_utilization``,
 ``wifi_jitter_ms``, ``moved_fg_count``, ``max_fg_delay_ms``). Extra columns
-(e.g. ``traffic_profile``, ``wifi_collision_rate``) are ignored.
+(e.g. ``traffic_profile``, ``wifi_collision_rate``) are ignored. The Fig. 15
+data also needs the ``wifi_occupancy`` column.
 
 :func:`write_figures` draws every figure from a full sweep results table
 (one row per run). ``python -m cowic.analysis`` calls it on a results CSV.
@@ -50,7 +54,27 @@ REQUIRED_COLUMNS: tuple[str, ...] = ("experiment_id",) + tuple(
 
 # Values of the ``sweep`` column written by ``scripts/run_benchmark_sweep.py``.
 MAIN_SWEEP = "main"  # D_free sweep per experiment (Figs. 11-14).
-SENSING_SWEEP = "sensing"  # D_sensing sweep for Exp 4 (Fig. 16).
+OCCUPANCY_SWEEP = "occupancy"  # One run per traffic profile (Fig. 15).
+SENSING_SWEEP = "sensing"  # D_sensing sweep for Exp 4 (Figs. 16 and 17).
+
+# Busy airtime over run time of the WiFi trace of a run (x-axis of Fig. 15).
+OCCUPANCY_COLUMN = "wifi_occupancy"
+
+# Paper figure for each (traffic profile, T_ZB in ms) of a D_free sweep.
+# Other combinations get a neutral file name.
+D_FREE_FIGURES: dict[tuple[str, float], str] = {
+    ("Traffic_I", 1000.0): "fig11",
+    ("Traffic_I", 2000.0): "fig12",
+    ("Traffic_I", 5000.0): "fig13",
+    ("Traffic_III", 1000.0): "fig14",
+}
+# Paper figure for each (T_ZB, D_free) in ms of the occupancy sweep.
+OCCUPANCY_FIGURES: dict[tuple[float, float], str] = {(1000.0, 63.0): "fig15"}
+# Paper figure for each (traffic profile, T_ZB in ms) of the D_sensing sweep.
+SENSING_FIGURES: dict[tuple[str, float], str] = {
+    ("Traffic_I", 1000.0): "fig16",
+    ("Traffic_III", 1000.0): "fig17",
+}
 
 # Columns that identify one scenario; every other numeric column is a result.
 _SCENARIO_KEYS: tuple[str, ...] = (
@@ -64,7 +88,7 @@ _SCENARIO_KEYS: tuple[str, ...] = (
 
 
 class ResultPlotter:
-    """Generates six-panel metric figures matching Figs. 11, 14, and 16."""
+    """Generates six-panel metric figures matching Figs. 11 to 17."""
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
@@ -125,6 +149,27 @@ class ResultPlotter:
             filename=filename,
         )
 
+    def plot_occupancy_sweep(
+        self,
+        results_csv: Path,
+        title: str,
+        filename: str,
+        x_column: str = OCCUPANCY_COLUMN,
+        x_label: str = "WiFi Channel Occupancy",
+    ) -> Path:
+        """Fig. 15 style: six metric panels against the WiFi occupancy of
+        each traffic trace, one line per ``experiment_id``.
+        """
+        df = self._load(results_csv)
+        return self._plot_grid(
+            df,
+            x_column=x_column,
+            x_label=x_label,
+            series_column="experiment_id",
+            title=title,
+            filename=filename,
+        )
+
     def _load(self, results_csv: Path) -> pd.DataFrame:
         if not results_csv.exists():
             raise ConfigurationError(f"Results CSV not found: {results_csv}")
@@ -173,9 +218,16 @@ class ResultPlotter:
             ax.grid(True, alpha=0.3)
 
         handles, labels = axes.flat[0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc="upper center", ncol=len(labels), fontsize=9)
-        fig.suptitle(title, fontsize=13)
-        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
+        fig.suptitle(title, fontsize=13, y=0.995)
+        fig.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.955),
+            ncol=len(labels),
+            fontsize=9,
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.91))
 
         output_path = self.output_dir / f"{filename}.png"
         fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -206,14 +258,19 @@ def average_seeds(results: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_figures(results: pd.DataFrame, figures_dir: Path) -> list[Path]:
-    """Draw Fig. 11/14 for each traffic profile and T_ZB, and Fig. 16.
+    """Draw the D_free, occupancy and D_sensing figures of the sweep.
+
+    Each scenario of the paper gets its figure number (Figs. 11 to 17, see
+    ``D_FREE_FIGURES``, ``OCCUPANCY_FIGURES`` and ``SENSING_FIGURES``). Other
+    scenarios get a neutral file name without a figure number.
 
     ``results`` holds one row per run, as written by the benchmark sweep.
     The seed-averaged data behind each figure is saved next to it under
     ``figures_dir / "data"``.
 
     Raises:
-        ConfigurationError: If ``results`` lacks a scenario or metric column.
+        ConfigurationError: If ``results`` lacks a scenario or metric column,
+            or has occupancy rows without ``wifi_occupancy``.
     """
     missing = [
         c for c in (*_SCENARIO_KEYS, *REQUIRED_COLUMNS) if c not in results.columns
@@ -230,7 +287,7 @@ def write_figures(results: pd.DataFrame, figures_dir: Path) -> list[Path]:
     for (traffic, period), group in main.groupby(
         ["traffic_profile", "zigbee_period_ms"]
     ):
-        fig = "fig11" if traffic == "Traffic_I" else "fig14"
+        fig = D_FREE_FIGURES.get((traffic, period), "dfree")
         name = f"{fig}_{traffic}_tzb{int(period)}"
         csv_path = data_dir / f"{name}.csv"
         group.to_csv(csv_path, index=False)
@@ -242,20 +299,50 @@ def write_figures(results: pd.DataFrame, figures_dir: Path) -> list[Path]:
             )
         )
 
-    sensing = means[means["sweep"] == SENSING_SWEEP].copy()
-    if not sensing.empty:
-        traffics = ", ".join(sorted(sensing["traffic_profile"].unique()))
-        # One line per demand, as Exp 4-1 to Exp 4-4 in Fig. 16.
-        sensing["experiment_id"] = sensing["d_free_ms"].map(
-            lambda d: f"Exp_4 (D_free={d:g} ms)"
+    occupancy = means[means["sweep"] == OCCUPANCY_SWEEP]
+    if not occupancy.empty and (
+        OCCUPANCY_COLUMN not in occupancy.columns
+        or occupancy[OCCUPANCY_COLUMN].isna().any()
+    ):
+        raise ConfigurationError(f"Occupancy rows lack column {OCCUPANCY_COLUMN!r}")
+    for (period, d_free), group in occupancy.groupby(["zigbee_period_ms", "d_free_ms"]):
+        fig = OCCUPANCY_FIGURES.get((period, d_free), "occupancy")
+        prefix = "occupancy" if fig == "occupancy" else f"{fig}_occupancy"
+        name = f"{prefix}_tzb{int(period)}_dfree{d_free:g}"
+        csv_path = data_dir / f"{name}.csv"
+        group.to_csv(csv_path, index=False)
+        paths.append(
+            plotter.plot_occupancy_sweep(
+                csv_path,
+                title=(
+                    f"Varying WiFi occupancy, $T_{{ZB}}$ = {int(period)} ms, "
+                    f"$D_{{free}}$ = {d_free:g} ms"
+                ),
+                filename=name,
+            )
         )
-        csv_path = data_dir / "fig16_sensing.csv"
-        sensing.to_csv(csv_path, index=False)
+
+    sensing = means[means["sweep"] == SENSING_SWEEP].copy()
+    # One line per demand for Exp 4, as Exp 4-1 to Exp 4-4 in Figs. 16 and 17.
+    sensing["experiment_id"] = sensing["d_free_ms"].map(
+        lambda d: f"Exp_4 (D_free={d:g} ms)"
+    )
+    for (traffic, period), group in sensing.groupby(
+        ["traffic_profile", "zigbee_period_ms"]
+    ):
+        fig = SENSING_FIGURES.get((traffic, period), "sensing")
+        prefix = "sensing" if fig == "sensing" else f"{fig}_sensing"
+        name = f"{prefix}_{traffic}_tzb{int(period)}"
+        csv_path = data_dir / f"{name}.csv"
+        group.to_csv(csv_path, index=False)
         paths.append(
             plotter.plot_sensing_sensitivity(
                 csv_path,
-                title=f"Exp 4, {traffics}, various $D_{{sensing}}$",
-                filename="fig16_sensing",
+                title=(
+                    f"Exp 4, {traffic}, $T_{{ZB}}$ = {int(period)} ms, "
+                    f"various $D_{{sensing}}$"
+                ),
+                filename=name,
             )
         )
     return paths

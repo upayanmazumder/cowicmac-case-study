@@ -50,6 +50,10 @@ ignore_missing_imports = true
 minversion = "8.0"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: long simulations compared with the paper Sec. 5.3 values (pytest -m slow)",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cowic"]
