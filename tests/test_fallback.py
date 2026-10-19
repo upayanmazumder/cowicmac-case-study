@@ -5,7 +5,11 @@ import pytest
 from cowic.exceptions import ConfigurationError
 from cowic.models.frame_group import FrameGroup
 from cowic.wifi.baselines import find_whitespaces
-from cowic.wifi.fallback import FALLBACK_STATUS, fallback_whitespace_expansion
+from cowic.wifi.fallback import (
+    FALLBACK_STATUS,
+    NO_SENSING_STATUS,
+    fallback_whitespace_expansion,
+)
 from traces.playback import frame_groups_from_frame, iter_cycles
 from traces.synthetic_generator import build_trace, load_profile
 
@@ -140,11 +144,45 @@ def test_fitting_gap_does_not_postpone_fg_that_carryover_alone_keeps_on_time() -
     assert by_id[1].scheduled_start_ms == 110.0
 
 
-def test_sensing_keeps_priority_when_window_is_short() -> None:
+def test_sensing_window_is_reserved_in_full_when_whitespace_is_short() -> None:
+    """Issue #48: the only gap is 6 ms, but sensing needs 10 ms. Sensing is
+    mandatory, so FG 2 (no slack) is postponed out of it. FG 2 is postponed
+    anyway, so the free window may then extend without a new postponement."""
     fgs = [_fg(1, 0.0, 10.0, bound=0.0), _fg(2, 16.0, 84.0, bound=0.0)]
     result = fallback_whitespace_expansion(fgs, 0.0, 100.0, 62.0, 10.0)
-    assert (result.t_sense_start_ms, result.t_sense_end_ms) == (10.0, 16.0)
-    assert result.t_free_start_ms == result.t_free_end_ms == 16.0
+    assert result.solver_status == FALLBACK_STATUS
+    assert (result.t_sense_start_ms, result.t_sense_end_ms) == (10.0, 20.0)
+    assert result.t_free_start_ms == 20.0
+    assert result.t_free_end_ms == pytest.approx(82.0)
+    first, second = result.decisions
+    assert not first.is_postponed and first.delay_ms == 0.0
+    assert second.is_postponed
+
+
+def test_fully_busy_cycle_still_gets_its_sensing_window() -> None:
+    """Issue #48 acceptance case: a fully busy cycle returns a 10 ms
+    sensing window instead of a zero-length one."""
+    fg = FrameGroup(1, 0.0, 50.0, 150.0, 0.0, False)
+    result = fallback_whitespace_expansion([fg], 0.0, 50.0, 10.0, 10.0)
+    assert result.t_sense_end_ms - result.t_sense_start_ms == pytest.approx(10.0)
+    assert result.decisions[0].is_postponed
+
+
+def test_cycle_shorter_than_sensing_window_is_flagged() -> None:
+    result = fallback_whitespace_expansion([], 0.0, 5.0, 10.0, 10.0)
+    assert result.solver_status == NO_SENSING_STATUS
+    assert result.t_sense_end_ms == result.t_sense_start_ms
+    assert result.t_free_end_ms == result.t_free_start_ms
+
+
+def test_carryover_prevents_false_sensing_reservation() -> None:
+    """The remaining 12 ms cannot hold a 15 ms sensing window."""
+    fg = _fg(1, 0.0, 10.0)
+    result = fallback_whitespace_expansion(
+        [fg], 0.0, 20.0, 0.0, 15.0, channel_free_at=8.0
+    )
+    assert result.solver_status == NO_SENSING_STATUS
+    assert result.t_sense_start_ms == result.t_sense_end_ms
 
 
 def test_fully_busy_cycle_extends_from_cycle_start() -> None:

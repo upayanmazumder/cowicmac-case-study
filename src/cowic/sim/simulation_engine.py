@@ -464,12 +464,20 @@ class _RunStats:
     wbeacon_lost: int = 0
     csma_ca_fallback_cycles: int = 0
     milp_unproven_cycles: int = 0
+    sensing_missed_cycles: int = 0
     zigbee_packets_attempted: int = 0
     max_fg_delay_ms: float = 0.0
 
-    def record_cycle(self, outcome: CycleOutcome) -> None:
-        """Fold one completed AP cycle into the cycle-level totals."""
+    def record_cycle(self, outcome: CycleOutcome, d_sensing_ms: float = 0.0) -> None:
+        """Fold one completed AP cycle into the cycle-level totals.
+
+        A cycle counts in ``sensing_missed_cycles`` when the experiment needs
+        a sensing window but the AP reserved less than ``d_sensing_ms``.
+        """
         self.cycles_run += 1
+        reserved = outcome.schedule.t_sense_end_ms - outcome.schedule.t_sense_start_ms
+        if d_sensing_ms > 0 and reserved < d_sensing_ms - 1e-9:
+            self.sensing_missed_cycles += 1
         if outcome.used_fallback:
             self.fallback_cycles += 1
         if outcome.schedule.solver_status == UNPROVEN_STATUS:
@@ -524,6 +532,7 @@ class _RunStats:
             "wbeacon_lost": float(self.wbeacon_lost),
             "csma_ca_fallback_cycles": float(self.csma_ca_fallback_cycles),
             "milp_unproven_cycles": float(self.milp_unproven_cycles),
+            "sensing_missed_cycles": float(self.sensing_missed_cycles),
             "max_fg_delay_ms": self.max_fg_delay_ms,
             "zigbee_packets_attempted": float(self.zigbee_packets_attempted),
             "wifi_transmissions": float(total_wifi),
@@ -732,7 +741,7 @@ class SimulationEngine:
             if ctc.delay_ms > 0:
                 yield env.timeout(ctc.last_attempts * ctc.delay_ms)
 
-            stats.record_cycle(outcome)
+            stats.record_cycle(outcome, config.d_sensing_ms)
             self.last_demand_history.append(outcome.d_free_ms)
             carried = []
             for decision in outcome.schedule.decisions:
