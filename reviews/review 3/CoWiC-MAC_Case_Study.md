@@ -1,312 +1,234 @@
-# F1+TF1 Computer Networks: Case Study Review 3
+# CoWiC-MAC: WiFi and ZigBee Coexistence by Coordinated Scheduling
 
-## 1. Case Study Title
+Computer Networks, F1+TF1 Case Study, Review 3
 
-### CoWiC-MAC: A Coordinated WiFi-Centric MAC Mechanism in Heterogeneous Wireless Networks
+| Team member     | Registration |
+| --------------- | ------------ |
+| Upayan Mazumder | 24BDS0367    |
+| Nitesh Pandey   | 24BCB0141    |
+| Divyansh Saxena | 24BCB0108    |
 
-## Team Details
+Base paper: T. Cheng, S. Li, Y. Pan, "CoWiC-MAC: A coordinated WiFi-centric MAC mechanism in heterogeneous wireless networks", *Computer Networks* 287 (2026) 112479 [1]. Code: github.com/upayanmazumder/cowicmac-case-study.
 
-| S.No | Name            | Registration Number |
-| ---- | --------------- | ------------------- |
-| 1    | Upayan Mazumder | 24BDS0367           |
-| 2    | Nitesh Pandey   | 24BCB0141           |
-| 3    | Divyansh Saxena | 24BCB0108           |
+## 1. The problem
 
----
+WiFi (IEEE 802.11) and ZigBee (IEEE 802.15.4) both use the 2.4 GHz ISM band, so their frames can overlap in time and corrupt each other. The paper cites measurements in which ZigBee packet loss exceeds 60 % and WiFi throughput drops by 20 % (Sec. 1, refs. [5, 6] of the paper).
 
-## 2. Software Implementation Overview
+The paper names two causes (Sec. 1):
 
-This review documents the software-only CoWiC-MAC simulation built for the case study. The implementation follows Cheng, Li, and Pan (_Computer Networks_, 2026, Art. 112479).
+1. **WiFi traffic is bursty.** A ZigBee node uses CSMA/CA. It senses the channel (clear channel assessment, CCA) and sends only when the channel is idle. Under heavy WiFi load the idle gaps (whitespaces) are short and hard to predict, so ZigBee rarely finds a gap that is long enough for a packet, its backoff and its ACK.
+2. **WiFi is the stronger technology.** It transmits at higher power and with more aggressive channel access, so ZigBee loses when both transmit.
 
-Stack:
+Earlier fixes fall in two groups. Opportunistic schemes only use the gaps that exist. Explicit schemes such as ECC reserve the channel with a CTS frame, but ECC does not know how much airtime ZigBee needs, and a CTS reservation (NAV) is limited to 40 ms (paper Sec. 5.3.1). Both groups treat the other network as a black box.
 
-| Layer                 | Choice                      |
-| --------------------- | --------------------------- |
-| Language              | Python 3.11+                |
-| Discrete-event engine | SimPy                       |
-| MILP                  | PuLP + HiGHS (`highspy`)    |
-| Tests                 | pytest                      |
-| Lint / types          | ruff, mypy                  |
+**Idea of CoWiC-MAC.** The WiFi access point (AP) already schedules its stations. CoWiC-MAC lets the ZigBee coordinator (ZC) tell the AP how much airtime it needs. The AP then moves some WiFi traffic in time to open one clean window, and tells the ZC where the window is. The ZC reshapes its own superframe to fit the window. Contention is replaced by an agreed schedule.
 
-Verification status at document time:
+## 2. Networking background used in this project
 
-- 263 automated tests passing
-- CI green on Python 3.11 and 3.12
-- Clean `mypy` and `ruff` checks
+**IEEE 802.11ax (WiFi 6).** The AP broadcasts beacons. With Target Wake Time (TWT) and Trigger Frames the AP, not the stations, decides when each station transmits. This gives the AP control over WiFi timing (paper Sec. 3.1). The AP groups nearby WiFi transmissions into *Frame Groups* (FGs). An FG is the unit that CoWiC-MAC moves.
 
-Implemented modules:
+**IEEE 802.15.4 beacon-enabled mode (ZigBee).** The ZC sends a beacon that starts a *superframe*. The superframe has up to 16 equal time slots of length t_SfSlot = 0.96 ms × 2^SO, with superframe order SO from 0 to 14. The first slot carries the beacon. The next slots form the *Contention Access Period* (CAP), where nodes use slotted CSMA/CA. The last slots form the *Contention-Free Period* (CFP), where nodes use *Guaranteed Time Slots* (GTS) and do not contend. At most 7 slots can be GTS, and the CAP and CFP together have at most 15 slots.
 
-| Area       | Paths                                                                    |
-| ---------- | ------------------------------------------------------------------------ |
-| Models     | `src/cowic/models/frame_group.py`, `src/cowic/models/superframe.py`      |
-| WiFi       | `ap_orchestrator.py`, `milp_scheduler.py`, `baselines.py`, `fallback.py` |
-| ZigBee     | `coordinator.py`, `lwsa_adapter.py`                                      |
-| CTC        | `src/cowic/ctc/channel.py`                                               |
-| Simulation | `simulation_engine.py`, `channel_medium.py`                              |
-| Analysis   | `metrics.py`, `plotter.py`                                               |
-| Traces     | `traces/synthetic_generator.py`, `traces/playback.py`                    |
-| Sweep      | `scripts/run_benchmark_sweep.py`                                         |
+**Cross-Technology Communication (CTC).** WiFi and ZigBee radios cannot decode each other's frames, so they need a trick to exchange data (paper Sec. 3.2).
 
----
+| Direction | Method | Idea |
+| --- | --- | --- |
+| WiFi to ZigBee | WiCast [4] | The AP shapes the payload of a WiFi frame so that its waveform looks like a ZigBee signal. DSSS spreading in ZigBee tolerates the small errors. |
+| ZigBee to WiFi | SymBee (paper ref. [39]) | The ZC sends chosen symbols (0xEF, 0x67). They cause phase shifts of +4π/5 and −4π/5 at the WiFi receiver, which the AP can detect. The rate is 1/8 of the normal ZigBee rate, which is enough for short demand messages. |
 
-## 3. Contributor Workstream Summary
+The paper calls the control frames WBeacon (AP to ZC) and ZBeacon (ZC to AP).
 
-Presentation ownership matches Review 2.
+## 3. How CoWiC-MAC works
 
-| Contributor     | Presentation domain  | Main implementation focus                                                                                                   |
-| --------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Upayan Mazumder | Central architecture | Simulation engine, CTC, channel medium, MILP scheduler, L-WSA, plotter, integration                                         |
-| Nitesh Pandey   | WiFi side            | Trace generator, AP orchestrator, baselines, fallback, hard-constraint MILP (Exp 5), engine fixes, metrics, benchmark sweep |
-| Divyansh Saxena | ZigBee side          | ZigBee architecture review, superframe / L-WSA specification input, test design                                             |
+### 3.1 One coordination cycle
 
----
+The protocol repeats every ZigBee period T_ZB (for example 1000 ms). Figure 1 shows one cycle.
 
-## 4. System Architecture and Data Flow
+<svg viewBox="0 0 760 200" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif" font-size="11">
+<text x="4" y="30" font-weight="bold">WiFi</text>
+<text x="4" y="95" font-weight="bold">Windows</text>
+<text x="4" y="160" font-weight="bold">ZigBee</text>
+<rect x="125" y="15" width="75" height="26" fill="#c9d7e8" stroke="#133a6f"/><text x="150" y="32">FG 1</text>
+<rect x="208" y="15" width="62" height="26" fill="#c9d7e8" stroke="#133a6f"/><text x="228" y="32">FG 2</text>
+<rect x="280" y="15" width="80" height="26" fill="#c9d7e8" stroke="#133a6f"/><text x="300" y="32">FG 3</text>
+<rect x="395" y="15" width="40" height="26" fill="#f5d9a8" stroke="#8a5a00"/>
+<rect x="590" y="15" width="70" height="26" fill="#c9d7e8" stroke="#133a6f"/><text x="610" y="32">FG 5</text>
+<rect x="670" y="15" width="70" height="26" fill="#c9d7e8" stroke="#133a6f"/><text x="690" y="32">FG 6</text>
+<rect x="60" y="80" width="56" height="26" fill="#e8e8e8" stroke="#555"/><text x="64" y="97" font-size="9">sensing</text>
+<rect x="370" y="80" width="200" height="26" fill="#d8efd8" stroke="#2a6b2a"/><text x="400" y="97">free window (D_free)</text>
+<rect x="64" y="145" width="48" height="26" fill="#f0f0f0" stroke="#555"/><text x="68" y="162" font-size="9">ZBeacon</text>
+<rect x="372" y="145" width="16" height="26" fill="#b5d3f0" stroke="#133a6f"/>
+<rect x="390" y="145" width="16" height="26" fill="#b5d3f0" stroke="#133a6f"/>
+<rect x="408" y="145" width="75" height="26" fill="#e9f3e9" stroke="#2a6b2a"/><text x="425" y="162">CAP</text>
+<rect x="485" y="145" width="83" height="26" fill="#d8efd8" stroke="#2a6b2a"/><text x="510" y="162">CFP (GTS)</text>
+<text x="372" y="140" font-size="9">B1 B2</text>
+<text x="388" y="55" font-size="9" fill="#8a5a00">residual WiFi (unavoidable)</text>
+<line x1="60" y1="190" x2="745" y2="190" stroke="#333"/><text x="700" y="198" font-size="9">time</text>
+</svg>
 
-The system has three domains: WiFi, ZigBee, and the shared 2.4 GHz medium. CTC joins the two MAC domains.
+*Figure 1. One cycle (not to scale). The AP moves FG 4 out of the free window and keeps the sensing window clear. A small residual WiFi fragment remains inside the free window, and the ZC avoids it.*
 
-```mermaid
-sequenceDiagram
-  participant ZC as ZigBee Coordinator
-  participant CTC as CTC Channel
-  participant AP as AP Orchestrator
-  participant SCH as MILP / Fallback
-  participant LWSA as L-WSA
-  participant MED as Channel Medium
+### 3.2 The four-step handshake (paper Sec. 4.2)
 
-  ZC->>CTC: ZBeacon (d_free_ms)
-  CTC->>AP: demand
-  AP->>SCH: reschedule Frame Groups
-  SCH-->>AP: free + sensing windows
-  AP->>CTC: WBeacon (window bounds)
-  CTC->>ZC: grant
-  ZC->>LWSA: adapt superframe
-  LWSA-->>ZC: SuperframeConfig
-  AP->>MED: WiFi transmissions
-  ZC->>MED: ZigBee transmissions
-  Note over MED: Records are read by the metrics module after the run
+| Step | What happens | Network concept |
+| --- | --- | --- |
+| 1. Discovery | The AP broadcasts WBeacon 1 with the beacon interval and the sensing window position. The ZC listens by default, so it needs no association. | Beacon-based synchronization without strict global time. |
+| 2. Demand report | In the sensing window the AP listens for CTC signals. The ZC sends a ZBeacon with its traffic load. | Uplink CTC (Z2W). |
+| 3. Notification | The AP reschedules its FGs, then broadcasts WBeacon 2 with the free window and the sensing window. | Downlink CTC (W2Z). |
+| 4. Collision-free access | WiFi defers traffic out of the free window. ZigBee transmits inside it with an adapted superframe. | Time-division channel access. |
+
+**Failure handling (Sec. 4.5.2).** If the AP does not get a valid ZBeacon, it assumes no ZigBee demand. If the ZC does not decode a WBeacon, it stays in listening mode and tries again next cycle. After a failed handshake both sides use plain CSMA/CA, so CTC errors lower efficiency but do not break normal operation. The messages are refreshed every cycle, so no retransmission protocol is needed.
+
+### 3.3 WiFi side: choosing which FGs to move (paper Sec. 4.3, App. A)
+
+The AP chooses a new start time s'_k for every FG k in the cycle [T_start, T_end]. An FG has an arrival time a_k, a duration d_k, a deadline e_k and an original start s_k. The AP also chooses where to place two windows: the free window for ZigBee data and a short sensing window for the next ZBeacon.
+
+The objective (paper Eq. 1) minimizes four costs:
+
+<div class="eq">min &nbsp; Σ z<sub>k</sub><sup>free</sup>·d<sub>k</sub> &nbsp;+&nbsp; γ Σ z<sub>k</sub><sup>sense</sup>·d<sub>k</sub> &nbsp;+&nbsp; λ Σ |s'<sub>k</sub> − s<sub>k</sub>| &nbsp;+&nbsp; Σ μ<sub>k</sub>·P<sub>k</sub></div>
+
+| Term | Meaning |
+| --- | --- |
+| z_free · d | WiFi airtime that overlaps the free window. |
+| γ · z_sense · d | WiFi airtime that overlaps the sensing window. γ is large because a lost ZBeacon breaks the loop. |
+| λ · \|s' − s\| | How far an FG moves. This limits WiFi delay and jitter. |
+| μ_k · P_k | Cost of postponing FG k to the next cycle (P_k = 1). μ_k = μ_base / max(ε, e_k − (T_end + d_k)) grows as the deadline gets close. |
+
+The constraints keep the schedule physically valid (paper Eq. 3 to 5, 13 to 17):
+
+- The free window and the sensing window lie inside the cycle and do not overlap.
+- An FG cannot start before it arrives and must end before its deadline.
+- A postponed FG must still be able to meet its deadline in the next cycle.
+- Two FGs in the same cycle must not overlap (WiFi must not collide with itself).
+- Nothing may overlap the sensing window. This is a hard rule.
+
+The indicator functions make the problem non-linear. The paper rewrites it as a Mixed-Integer Linear Program (MILP) with the *Big-M method*. A binary variable switches a constraint on or off, and a large constant M makes the constraint harmless when it is off. We solve the MILP with HiGHS through PuLP, with a 10 s limit per cycle.
+
+**Cheaper alternative (Sec. 4.3).** For weak APs, the AP skips the solver and uses an idle gap that is long enough, or it extends the largest gap. We use this *whitespace expansion* as a fallback when the MILP has no usable solution.
+
+### 3.4 ZigBee side: L-WSA (paper Sec. 4.4)
+
+CoWiC-MAC splits the ZigBee beacon into two parts (paper Sec. 3.1). Beacon1 tells the nodes when Beacon2 will come. Beacon2 carries the slot allocation. Because of this split, the ZC can start the superframe later than the cycle start, at a beacon offset, and so can skip an early WiFi fragment.
+
+The AP cannot always clear the free window completely. The ZC learns where the residual WiFi fragments are and runs the Lightweight Window-Scaling Algorithm (L-WSA). It picks four parameters: the slot length t_SfSlot, the number of CAP slots i, the number of CFP slots j, and the beacon offset t_offset. It maximizes (paper Eq. 6):
+
+<div class="eq">η<sub>total</sub> = m · t<sub>min</sub> · η<sub>cap</sub> + α · n · t<sub>SfSlot</sub> · η<sub>cfp</sub></div>
+
+Here m is the number of CAP transmission attempts that do not overlap WiFi, and n is the number of GTS slots that do not overlap WiFi (Eq. 9). η is payload time divided by total time, so backoff, turnaround and ACK count as overhead. α weights the CFP higher because GTS access is deterministic. The search is limited by the standard: (1 + i + j) · t_SfSlot must fit the window, j ≤ 7 and i + j ≤ 15 (Eq. 10). The space is small, so the ZC enumerates all candidates. This is cheap enough for a ZigBee device.
+
+## 4. Our simulation
+
+The paper used NS-3 with traces recorded from a real router. We built a software-only simulation in Python. Table 1 shows what we kept and what we simplified.
+
+| Aspect | Paper | Our simulation |
+| --- | --- | --- |
+| Simulator | NS-3 | SimPy discrete-event simulation, one cycle per T_ZB |
+| WiFi traffic | Four 10-minute tcpdump traces | Synthetic traces from the paper's statistics (Table 5): exponential FG lengths and whitespaces, same mean values |
+| ZigBee network | One ZC and five end devices | One ZC and one traffic source |
+| CTC | Real signal emulation | Control messages with a packet error rate and a fixed delay. Lost messages trigger the fallback behavior. |
+| Collision | Overlap in time corrupts both frames | The same rule (Sec. 5.1 of the paper) |
+| Scheduler | MILP | MILP (HiGHS) with whitespace fallback |
+
+*Table 1. Paper and simulation.*
+
+**Shared medium.** The channel is one half-duplex resource. Every WiFi FG and every ZigBee packet is registered with a start time and a duration. If two registered bursts overlap in time, both are marked failed. The metrics read these records at the end of the run. This is the same "mutual corruption" rule the paper uses.
+
+**Code layout.** `src/cowic/wifi` holds the AP state machine, the MILP, the baselines and the fallback. `src/cowic/zigbee` holds the ZC state machine and L-WSA. `src/cowic/ctc` holds the control channel. `src/cowic/sim` holds the SimPy engine and the medium. `src/cowic/analysis` holds the metrics and plots.
+
+**Metrics (paper Sec. 5.1).**
+
+| Metric | Definition in the code |
+| --- | --- |
+| G_z, ZigBee gain | Delivered ZigBee payload divided by the payload the same demand would carry in a clean window, summed over all cycles. A cycle with no granted window still counts as unmet demand. |
+| PDR_w, WiFi drop rate | Airtime of FGs that missed their deadline or were destroyed by a collision, divided by requested WiFi airtime. |
+| U_eff | Successful WiFi, ZigBee and sensing airtime divided by run time. |
+| Jitter, moved FGs, maximum delay | Spread of FG delay, count of FGs moved from their original time, and the largest delay. |
+
+## 5. Experiments
+
+The six configurations follow Table 4 of the paper. Exp 1 to 3 are baselines. Exp 4 is CoWiC-MAC. Exp 5 and 6 each remove one part, so they show what that part contributes.
+
+| Exp | WiFi scheduling | CTC | ZigBee superframe | Sensing window | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| 1 | None | None | Fixed | None | Uncoordinated baseline |
+| 2 | None, use gaps | WiFi to ZigBee | Fixed | None | Opportunistic baseline |
+| 3 | ECC (CTS, NAV up to 40 ms) | Both | Fixed | None | Explicit reservation baseline |
+| 4 | MILP, soft | Both | L-WSA | 10 ms | CoWiC-MAC |
+| 5 | MILP, hard | WiFi to ZigBee | Fixed | None | WiFi must vacate the whole window |
+| 6 | MILP, soft | WiFi to ZigBee | L-WSA | None | CoWiC-MAC without the sensing window |
+
+Four traffic profiles come from the paper (Table 5): Traffic I is the busiest and Traffic IV is the lightest. The sweeps follow the paper's figures:
+
+- **Fig. 11 to 14:** vary D_free (31, 62, 93, 123 ms) and T_ZB (1000, 2000, 5000 ms).
+- **Fig. 15:** vary the WiFi occupancy (all four traces) at T_ZB = 1000 ms and D_free = 63 ms.
+- **Fig. 16 and 17:** vary D_sensing (10, 20, 50, 100 ms) for Exp 4 on Traffic I and Traffic III.
+
+## 6. Results
+
+We ran 200 simulations of 60 s each (seed 42, `results/benchmark_results.csv`). The paper uses 600 s traces, so this is a reference run and not a full reproduction. All values below come from this run, at T_ZB = 1000 ms on Traffic I (88 % occupied).
+
+| Exp | G_z at D_free = 31 / 62 / 123 ms | Paper G_z | PDR_w at 31 / 62 / 123 ms | Paper PDR_w |
+| --- | --- | --- | --- | --- |
+| 1 | 0.13 / 0.12 / 0.12 | 0.013 at 31 ms | 11 / 14 / 14 % | 9.7 % at 123 ms |
+| 2 | 0.48 / 0.28 / 0.28 | 0.558 at 31 ms, 0.085 at 123 ms | 0 / 0 / 0 % | 7.6 % at 123 ms |
+| 3 | 1.00 / 0.67 / 0.67 | near 1 at 31 ms, flat beyond 40 ms | 0 / 0 / 0 % | below 1 % at 31 ms |
+| 4 | 0.94 / 0.87 / 0.63 | above 0.986 / 0.963 / 0.934 to 0.947 | 1.3 / 2.7 / 4.0 % | 0 |
+| 5 | 1.00 / 1.00 / 1.00 | 1.00 | 1.3 / 3.4 / 8.1 % | below 1 % at 31 ms, 2.8 % at 123 ms |
+| 6 | 0.97 / 0.94 / 0.67 | same as Exp 4 | 1.3 / 2.7 / 4.5 % | 0 |
+
+*Table 2. Traffic I. The acceptance check compares 17 numbers that the paper states for Exp 4, 5 and 6. Five pass.*
+
+### 6.1 What matches the paper
+
+- **Coordination helps, and the order of the schemes is right.** The uncoordinated scheme (Exp 1) delivers about 12 % of the ZigBee demand on Traffic I. Gap search (Exp 2) delivers 28 %. The NAV-limited ECC scheme (Exp 3) stops at 0.67 once D_free passes 40 ms. CoWiC-MAC (Exp 4 and 6) stays at 0.87 to 0.94 for D_free up to 62 ms.
+- **Rigid vacating gives full ZigBee gain but costs WiFi.** Exp 5 reaches G_z = 1.00 at every D_free, and its WiFi drop rate rises to 8.1 % at 123 ms. The paper reports the same direction (2.8 % at 123 ms).
+- **Load matters (Fig. 15).** When occupancy rises from 0.14 to 0.88, G_z of Exp 1 falls from 0.87 to 0.12 and G_z of Exp 2 falls from 1.00 to 0.28. Exp 4 falls only from 0.98 to 0.89. Exp 4 also loses no WiFi frames on the traces below 0.6 occupancy.
+- **A long sensing window costs ZigBee airtime on busy traffic (Fig. 16 and 17).** On Traffic I at D_free = 31 ms, G_z of Exp 4 falls from 0.94 to 0.62 when D_sensing grows from 10 to 100 ms. The paper reports 0.905 to 0.480 (it does not state D_free for this sentence). On Traffic III, G_z stays at 0.98 for every D_sensing, as the paper says for sparse traffic.
+- **Sparse traffic is easy (Fig. 14).** On Traffic III, Exp 4 has no WiFi loss and G_z of at least 0.95 at every D_free.
+
+### 6.2 Where it does not match, and why
+
+1. **Not enough airtime at high demand.** Traffic I keeps the channel 88 % busy. At D_free = 123 ms and D_sensing = 10 ms, the two windows need another 13.3 % of every 1000 ms cycle. The total is about 101 %, so no schedule can give ZigBee its full window and also lose no WiFi frame. The paper reports both, and we could not reproduce that on our traces.
+2. **The paper does not give γ, λ or μ_base.** We use γ = 10, λ = 1 and μ_base = 100. These weights set the trade-off between delaying WiFi and giving airtime to ZigBee. In a 30 s test of Exp 4 at 31 ms, raising μ_base to 10000 removes all WiFi drops but lowers G_z from 0.92 to 0.71. We did not tune the weights to match the paper.
+3. **Synthetic traffic.** We use the paper's mean FG and whitespace lengths, but not its real traces. The paper's Fig. 9 gives a whitespace tail that no distribution with the Table 5 mean for Traffic I can have (Markov's inequality: P(W > 10 ms) ≤ 5.3 / 10 = 53 %, while Fig. 9 states 79.2 %). `reviews/project_document.md` explains this in detail.
+4. **First cycle.** In Exp 4 the AP has no demand report in the first cycle, so ZigBee gets no window then. This costs at most 1 cycle in 60.
+5. **Exp 1 and Exp 2 differ from the paper by large amounts** (for example Exp 2 drops no WiFi frame in our run, but 7.6 % in the paper). We did not find the cause. In our model, Exp 2 sends ZigBee only in the gaps the AP announces.
+
+The WiFi drop rate of Exp 4 is not zero at any D_free on Traffic I, so the claim "zero WiFi loss" is not reproduced for this traffic.
+
+## 7. Verification
+
+- 331 automated tests pass with 98.55 % line coverage. The suite includes checks of the MILP constraints, the L-WSA search against a brute-force search, the collision rule, the CTC channel and full multi-cycle runs.
+- `pytest -m slow` compares 30 s runs with every number the paper states. Points that differ are listed with their cause. A point that starts to pass makes the test fail, so the list stays correct.
+- The checks hold on every run: no two WiFi FGs overlap, no WiFi frame enters the sensing window, and ZigBee defers instead of transmitting into a WiFi fragment.
+
+## 8. Limitations
+
+- No radio model: no fading, capture effect or SNR. Any overlap in time is a collision.
+- CTC is a message model with an error rate. It does not emulate the WiCast and SymBee waveforms.
+- One ZigBee traffic source. Contention between five end devices and GTS allocation among them are not modeled.
+- Synthetic traces replace the paper's real traces.
+- The MILP solver has a 10 s limit per cycle. In the reference run 432 of the cycles stopped at this limit, so some values depend on the machine.
+
+## 9. How to run it
+
+```
+pip install -e ".[dev]"
+python -m cowic.sim --config configs/exp4_cowic_full.yaml --duration 10
+python scripts/run_benchmark_sweep.py --quick
+pytest
 ```
 
-CTC payloads:
+## References
 
-| Message | Direction | Fields                                                                   |
-| ------- | --------- | ------------------------------------------------------------------------ |
-| ZBeacon | ZC → AP   | `d_free_ms`                                                              |
-| WBeacon | AP → ZC   | `t_free_start_ms`, `t_free_end_ms`, `t_sense_start_ms`, `t_sense_end_ms` |
+[1] T. Cheng, S. Li, Y. Pan, "CoWiC-MAC: A coordinated WiFi-centric MAC mechanism in heterogeneous wireless networks", *Computer Networks* 287 (2026) 112479. doi:10.1016/j.comnet.2026.112479.
 
-Residual WiFi fragment lists stay outside the WBeacon scalar payload. The ZC receives them as a separate input, matching the base-paper model where the ZC senses leftover WiFi activity inside the granted window.
+[2] IEEE Std 802.11ax-2021, *Enhancements for High Efficiency WLAN*.
 
----
+[3] IEEE Std 802.15.4, *Low-Rate Wireless Networks*.
 
-## 5. WiFi Frame Group MILP Formulation
+[4] D. Xia, X. Zheng, L. Liu, H. Ma, "Parallel cross-technology transmission from IEEE 802.11ax to heterogeneous IoT devices", *IEEE INFOCOM*, 2023 (WiCast, paper ref. [20]).
 
-Objective (Equations 11–17):
+[5] SimPy, discrete-event simulation for Python, simpy.readthedocs.io.
 
-```math
-\min \sum_{k=1}^{K} z_k^{\text{free}} d_k
-+ \gamma \sum_{k=1}^{K} z_k^{\text{sense}} d_k
-+ \lambda \sum_{k=1}^{K} y_k
-+ \sum_{k=1}^{K} \mu_k P_k
-```
-
-Postponement cost (Eq. 2), larger for FGs close to their deadline:
-
-```math
-\mu_k = \frac{\mu_{\text{base}}}{\max\left(\epsilon,\ e_k - (T_{\text{end}} + d_k)\right)}
-```
-
-The code uses $\mu_{\text{base}} = 100$ and $\epsilon$ = 1 µs.
-
-Constraint groups:
-
-0. Window placement (Eq. 3/13): the free and sensing windows lie inside the cycle and do not overlap; a binary $b_{\text{ws}}$ picks which comes first
-1. Delay definition for $y_k$
-2. Causality with respect to arrival times
-3. Deadline and cycle-end bounds
-4. Feasibility of postponed Frame Groups in the next cycle
-5. Inter-FG non-overlap through Big-M ordering binaries
-6. Overlap indicator constraints for free and sensing windows (a disjunctive form: Eq. 16, as printed, would force $z_k = 1$ for non-overlapping FGs and contradict constraint 7)
-7. Hard sensing-window protection: $\sum_k z_k^{\text{sense}} = 0$
-
-Solver path: PuLP model solved with HiGHS (`highspy`). A custom solver can be supplied. If status is not optimal, the AP uses whitespace expansion fallback.
-
-Postponed FG reporting convention: a postponed FG is reported at `scheduled_start_ms = t_end_ms` with `delay_ms = max(0, t_end_ms - original_start_ms)`.
-
----
-
-## 6. ZigBee L-WSA Superframe Adaptation
-
-Objective:
-
-```math
-\eta_{\text{total}}
-= m \cdot t_{\min} \cdot \eta_{\text{cap}}^{p}
-+ \alpha \cdot n \cdot t_{\text{SfSlot}} \cdot \eta_{\text{cfp}}^{p}
-```
-
-Search variables and domains:
-
-| Variable            | Domain                                        |
-| ------------------- | --------------------------------------------- |
-| $t_{\text{SfSlot}}$ | $0.96 \cdot 2^{SO}$ ms, $SO \in [0, 14]$      |
-| $j$                 | $[0, 7]$                                      |
-| $i$                 | $i + j \le 15$                                |
-| $t_{\text{offset}}$ | window start and residual-fragment boundaries |
-
-Filter conditions:
-
-- Active superframe duration must fit the free window.
-- CAP slots contribute only when they clear a $t_{\min}$ occupancy check.
-- CFP slots contribute only when the full slot clears residual WiFi.
-
-IEEE 802.15.4 2.4 GHz O-QPSK constants used:
-
-| Constant        | Value    |
-| --------------- | -------- |
-| Symbol duration | 0.016 ms |
-| Base slot       | 0.96 ms  |
-| Backoff slot    | 0.32 ms  |
-| Turnaround      | 0.192 ms |
-| ACK             | 0.352 ms |
-| Max packet      | 4.256 ms (266 symbols: 127-byte PSDU plus 6-byte SHR/PHR) |
-
----
-
-## 7. Cross-Technology Communication Model
-
-The base paper uses WiCast for WiFi→ZigBee downlink and SymBee for ZigBee→WiFi uplink. This project does not emulate those waveforms.
-
-Instead, CTC is a discrete-event control channel:
-
-- Message types: `WBEACON`, `ZBEACON`
-- Configurable packet error rate
-- Scalar float payloads only
-
-This abstraction is enough for MAC-layer coordination studies. It is not a PHY fidelity claim.
-
----
-
-## 8. Experimental Design
-
-| Exp   | Config                    | Purpose                   | Held fixed / disabled                |
-| ----- | ------------------------- | ------------------------- | ------------------------------------ |
-| Exp 1 | `exp1_uncoordinated.yaml` | Uncoordinated baseline    | No CTC, no MILP, no L-WSA            |
-| Exp 2 | `exp2_opportunistic.yaml` | Natural whitespace only   | No WiFi rescheduling                 |
-| Exp 3 | `exp3_ecc.yaml`           | NAV-style ECC             | Fixed ZigBee superframe              |
-| Exp 4 | `exp4_cowic_full.yaml`    | Full CoWiC-MAC            | Soft MILP + L-WSA + sensing window   |
-| Exp 5 | `exp5_rigid_vacate.yaml`  | Hard WiFi vacate ablation | Hard MILP + fixed ZigBee superframe  |
-| Exp 6 | `exp6_overhead_free.yaml` | Overhead-free variant     | Soft MILP + L-WSA; no sensing window |
-
-Exp 6 also changes CTC from bidirectional to WiFi-to-ZigBee.
-
-The sweep has three stages:
-
-| Stage     | Paper figure | Experiments | Traffic                          | $T_{ZB}$ (ms)    | $D_{\text{free}}$ (ms) | $D_{\text{sensing}}$ (ms) |
-| --------- | ------------ | ----------- | -------------------------------- | ---------------- | ---------------------- | ------------------------- |
-| Main      | Figs. 11–14  | Exp 1–6     | I and III (I–IV with `--traffic`) | 1000, 2000, 5000 | 31, 62, 93, 123        | Config value              |
-| Occupancy | Fig. 15      | Exp 1–6     | I, II, III, IV                   | 1000             | 63                     | Config value              |
-| Sensing   | Figs. 16, 17 | Exp 4       | I (Fig. 16), III (Fig. 17)       | 1000             | 31, 62, 93, 123        | 10, 20, 50, 100           |
-
-Each stage uses 5 seeds. Each run replays 600 s of trace by default, as the paper traces in Fig. 10. The sweep warns when a run has fewer than 20 ZigBee cycles. The occupancy stage records the WiFi occupancy of each trace (busy airtime divided by run time). Fig. 15 uses this value as its x-axis.
-
-Acceptance criterion: every $G_z$ and $PDR_w$ value that Sec. 5.3.1 states for Exp 4, 5, and 6 (Fig. 11: Traffic I, $T_{ZB} = 1000$ ms). The tolerance is ±0.02 for $G_z$ and ±0.005 for $PDR_w$. `acceptance_report` in `scripts/run_benchmark_sweep.py` lists each point with the paper sentence.
-
----
-
-## 9. Evaluation and Key Claims
-
-Hypothesis mapping:
-
-| Hypothesis | Claim                           | Simulation support (reference run, Traffic I, $T_{ZB}$ = 1000 ms)                              |
-| ---------- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| H1         | $G_z \ge 90\%$ under heavy load | Exp 4 holds at 31 ms (0.942), not at 62, 93 and 123 ms (0.870, 0.800, 0.626)                |
-| H2         | $PDR_w = 0$                     | Not met: Exp 4 loses 1.3–4.0 % (postponement limit, see below)                                 |
-| H3         | Compare variant configurations  | Exp 5 changes the scheduler and ZigBee superframe. Exp 6 removes sensing and uses one-way CTC. |
-
-### Deviations from the base paper
-
-The table compares the paper values with `results/benchmark_results.csv`. This CSV comes from `python scripts/run_benchmark_sweep.py --duration 60 --seeds 1 --jobs 8`: 200 runs of 60 s, seed 42, all three stages. Fig. 11 points use Traffic I with $T_{ZB} = 1000$ ms (60 cycles per run). The paper replays 600 s traces, so this is a reference run, not a full reproduction. The values come from `acceptance_report`. Tolerance: ±0.02 for $G_z$, ±0.005 for $PDR_w$.
-
-| Exp   | Metric  | $D_{\text{free}}$ (ms) | Paper (Sec. 5.3.1) | Simulated   | Result |
-| ----- | ------- | ---------------------- | ------------------ | ----------- | ------ |
-| Exp 4 | $G_z$   | 31                     | > 0.986            | 0.942       | FAIL   |
-| Exp 4 | $G_z$   | 62                     | 0.963              | 0.870       | FAIL   |
-| Exp 4 | $G_z$   | 123                    | 0.934–0.947        | 0.626       | FAIL   |
-| Exp 4 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.027, 0.040 | FAIL |
-| Exp 5 | $G_z$   | 31, 62, 123            | 1.000              | 1.000, 1.000, 1.000 | PASS |
-| Exp 5 | $PDR_w$ | 31                     | < 0.01             | 0.013       | PASS   |
-| Exp 5 | $PDR_w$ | 123                    | 0.028              | 0.081       | FAIL   |
-| Exp 6 | $G_z$   | 31                     | > 0.986            | 0.967       | PASS   |
-| Exp 6 | $G_z$   | 62                     | 0.963              | 0.937       | FAIL   |
-| Exp 6 | $G_z$   | 123                    | 0.934–0.947        | 0.666       | FAIL   |
-| Exp 6 | $PDR_w$ | 31, 62, 123            | 0                  | 0.013, 0.027, 0.045 | FAIL |
-
-Result: FAIL. 5 of 17 points pass.
-
-Other paper values from the same run:
-
-| Point                                     | Paper        | Simulated |
-| ----------------------------------------- | ------------ | --------- |
-| Exp 1 $G_z$, Traffic I, 31 ms             | 1.3 %        | 13.2 %    |
-| Exp 1 $PDR_w$, Traffic I, 123 ms          | 9.7 %        | 14.0 %    |
-| Exp 2 $G_z$, Traffic I, 31 / 123 ms       | 55.8 / 8.5 % | 47.7 / 27.5 % |
-| Exp 2 $PDR_w$, Traffic I, 123 ms          | 7.6 %        | 0.0 %     |
-| Exp 1 $G_z$, Traffic III, 31 / 123 ms     | 54.3 / 36.1 % | 68.3 / 68.3 % |
-| Exp 2 $G_z$ / $PDR_w$, Traffic III, 123 ms | 93.9 / 1.4 % | 99.4 / 0.0 % |
-| Exp 4 $G_z$, Traffic I, $D_{\text{sensing}}$ 10 → 100 ms (paper: $D_{\text{free}}$ not stated; sim: 31 ms) | 90.5 → 48.0 % | 94.2 → 61.9 % |
-
-Causes (`reviews/project_document.md` §7, "Fidelity at high load"):
-
-1. Traffic I is about 88 % busy. At 123 ms the free and sensing windows need 13.3 % more, so the cycle needs about 101 % of its airtime. No schedule can give full $G_z$ with zero WiFi loss there.
-2. The paper gives no values for $\lambda$, $\gamma$ or $\mu_{\text{base}}$. With $\mu_{\text{base}} = 100$, the MILP postpones FGs near a cycle end that later do not fit the next cycle. $\mu_{\text{base}} = 10000$ removes these drops but lowers $G_z$ (0.709 at 31 ms in a 30 s run). The repo does not tune the weights to the paper.
-3. Exp 2 drops no WiFi FG because its ZigBee superframe uses only whitespace that the AP notifies. The paper does not say how Exp 2 loses 7.6 % of WiFi airtime.
-
-The qualitative trends hold. $G_z$ falls as WiFi occupancy grows (Fig. 15). A longer sensing window lowers $G_z$ on Traffic I but not on Traffic III (Figs. 16 and 17). Exp 3 stops at the 40 ms NAV limit. `tests/test_paper_points.py` (`pytest -m slow`) records each deviation as a strict `xfail`.
-
----
-
-## 10. Limitations and Future Work
-
-Known limitations of this software-only study:
-
-1. No PHY fading, capture, or SNR model
-2. CTC is an error-rate message model, not waveform CTC
-3. No multi-hop ZigBee routing
-4. No IEEE 802.11be multi-link operation
-5. ZigBee data traffic uses one simulated end device (`node_id=0`); per-device queues, slotted CAP contention, and GTS allocation across five end devices are not modeled.
-
-Useful extensions:
-
-1. Export traces into ns-3 for RF-level checks
-2. Add multi-ZC demand aggregation
-3. Study 802.11be multi-link coexistence with the same MILP / L-WSA split
-4. Replace abstract PER with measured CTC traces
-
----
-
-## 11. References
-
-1. Bianchi, G. "Performance Analysis of the IEEE 802.11 Distributed Coordination Function." _IEEE Journal on Selected Areas in Communications_, 18(3), pp. 535–547, 2000.
-2. Jamieson, K., and Balakrishnan, H. "PPR: Partial Packet Recovery for Wireless Networks." _ACM SIGCOMM Computer Communication Review_, 37(4), pp. 409–420, 2007.
-3. Huang, J., Xing, G., Zhou, G., and Zhou, R. "Beyond Co-existence: Exploiting WiFi White Space for ZigBee Performance Assurance." _ICNP_, 2010.
-4. Liang, C.-J. M., Priyantha, N. B., Liu, J., and Terzis, A. "Surviving Wi-Fi Interference in Low Power ZigBee Networks." _SenSys_, 2010.
-5. Zhang, X., and Shin, K. G. "Enabling Coexistence of Heterogeneous Wireless Systems: Case for ZigBee and WiFi." _MobiHoc_, 2011.
-6. Wang, Y., Wang, Q., Zheng, G., Zeng, Z., Zheng, R., and Zhang, Q. "WiCop: Engineering WiFi Temporal White-Spaces for Safe Operations of Wireless Personal Area Networks in Medical Applications." _IEEE Transactions on Mobile Computing_, 13(5), 2014.
-7. Guo, P., Cao, J., Zhang, K., and Liu, X. "Enhancing ZigBee Throughput under WiFi Interference Using Real-Time Adaptive Coding." _INFOCOM_, 2014.
-8. Yang, P., Yan, Y., Li, X.-Y., Zhang, Y., Tao, Y., and You, L. "Taming Cross-Technology Interference for Wi-Fi and ZigBee Coexistence Networks." _IEEE Transactions on Mobile Computing_, 15(4), 2016.
-9. Bellalta, B. "IEEE 802.11ax: High-Efficiency WLANs." _IEEE Wireless Communications_, 23(1), 2016.
-10. Li, Z., and He, T. "WEBee: Physical-Layer Cross-Technology Communication via Emulation." _MobiCom_, 2017.
-11. Deng, D.-J., et al. "IEEE 802.11ax: Highly Efficient WLANs for Intelligent Information Infrastructure." _IEEE Communications Magazine_, 55(12), 2017.
-12. Yin, Z., Li, Z., Kim, S. M., and He, T. "Explicit Channel Coordination via Cross-Technology Communication." _MobiSys_, 2018.
-13. Khorov, E., Kiryanov, A., Lyakhov, A., and Bianchi, G. "A Tutorial on IEEE 802.11ax High Efficiency WLANs." _IEEE Communications Surveys & Tutorials_, 21(1), 2019.
-14. Nurchis, M., and Bellalta, B. "Target Wake Time: Scheduled Access in IEEE 802.11ax WLANs." _IEEE Wireless Communications_, 26(2), 2019.
-15. Pan, Y., Li, S., Zhang, Y., and Zhu, T. "CDA: Coordinating Data Dissemination and Aggregation in Heterogeneous IoT Networks Using CTC." _Journal of Network and Computer Applications_, 171, 2020.
-16. Shao, C., Park, H., Roh, H., Lee, W., and Kim, H. "PolarScout: Wi-Fi Interference-Resilient ZigBee Communication via Shell-Shaping." _IEEE/ACM Transactions on Networking_, 28(4), 2020.
-17. Kim, S. "Enabling WLAN and WPAN Coexistence via Cross-Technology Communication." _Sensors_, 22(3), 2022.
-18. Chen, W., Yin, Z., and He, T. "Enabling Global Cooperation for Heterogeneous Networks via Reliable Concurrent Cross Technology Communications." _IEEE Transactions on Mobile Computing_, 21(11), 2022.
-19. Cheng, T., Li, S., Jiao, F., and Pan, Y. "WibZig: Reliable and Commodity-Device Compatible PHY-CTC via Chip Emulation in Phase." _IPSN_, 2023.
-20. Cheng, T., Li, S., Dang, W., and Pan, Y. "An Effective Data Dissemination Method in WAIC Networks Using Enhanced CTC." _Computer Networks_, 269, 2025.
-
-### Base paper
-
-Cheng, T., Li, S., and Pan, Y. "CoWiC-MAC: A Coordinated WiFi-Centric MAC Mechanism in Heterogeneous Wireless Networks." _Computer Networks_, 287, Art. 112479, 2026. DOI: [10.1016/j.comnet.2026.112479](https://doi.org/10.1016/j.comnet.2026.112479).
+[6] HiGHS, high-performance linear and mixed-integer optimization solver, highs.dev.

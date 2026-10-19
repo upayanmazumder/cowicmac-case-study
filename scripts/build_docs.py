@@ -38,6 +38,7 @@ DOCUMENTS: tuple[tuple[str, str], ...] = (
         "reviews/review 3/CoWiC-MAC_Case_Study.md",
         "reviews/review 3/CoWiC-MAC_Case_Study.pdf",
     ),
+    ("reviews/study_guide.md", "reviews/CoWiC-MAC_Study_Guide.pdf"),
 )
 
 DEFAULT_CHROME = next(
@@ -60,13 +61,15 @@ FENCE = re.compile(r"^```(mermaid|math)[ \t]*\n(.*?)^```[ \t]*$", re.M | re.S)
 CSS = """
 @page { size: A4; margin: 18mm 16mm; }
 body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
-       font-size: 10.5pt; line-height: 1.45; color: #111; }
+       font-size: 10pt; line-height: 1.4; color: #111; }
 h1 { font-size: 20pt; border-bottom: 2px solid #333; padding-bottom: 4px; }
 h2 { font-size: 15pt; margin-top: 1.4em; border-bottom: 1px solid #bbb;
      break-after: avoid; }
 h3 { font-size: 12.5pt; break-after: avoid; }
 table { border-collapse: collapse; margin: 0.8em 0; width: 100%;
-        break-inside: avoid; font-size: 9.5pt; }
+        font-size: 9.5pt; }
+tr { break-inside: avoid; }
+thead { display: table-header-group; }
 th, td { border: 1px solid #999; padding: 4px 7px; text-align: left;
          vertical-align: top; }
 th { background: #eee; }
@@ -79,6 +82,11 @@ img { display: block; max-width: 100%; max-height: 120mm; margin: 0.6em auto; }
 math[display="block"] { margin: 0.8em 0; font-size: 11.5pt; }
 a { color: #1a4fa0; text-decoration: none; }
 hr { border: 0; border-top: 1px solid #ccc; }
+.eq { text-align: center; background: #f6f8fb; border: 1px solid #d5dde8;
+       padding: 6px 8px; margin: 0.6em 0;
+       font-family: Cambria, "Times New Roman", serif; }
+svg { max-height: 70mm; margin: 0.4em 0; }
+em { color: #333; }
 """
 
 
