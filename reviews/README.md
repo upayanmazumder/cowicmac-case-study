@@ -15,7 +15,7 @@
 
 ## Team Study Guide
 
-- [Study guide](study_guide.md) (Markdown), [PDF](CoWiC-MAC_Study_Guide.pdf). One guide for the whole team: concepts, demo steps, viva questions, code map.
+- [Study guide](study_guide.md) (Markdown), [PDF](CoWiC-MAC_Study_Guide.pdf). One guide for the whole team: concepts, viva questions, code map.
 
 ## Presentation Study Guides (per presenter)
 

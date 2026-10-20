@@ -144,26 +144,6 @@ Use real WiFi traces. Model five ZigBee end devices. Run the full 600 s sweep wi
 
 Who presents what (same as Review 2): Upayan, central architecture (engine, CTC, medium, metrics). Nitesh, WiFi side (traces, AP, MILP, baselines, fallback, sweep). Divyansh, ZigBee side (superframe, L-WSA, coordinator).
 
-## 8. How to run a demo
-
-Run these from the repository root with the virtual environment active.
-
-```
-python -m cowic.sim --config configs/exp1_uncoordinated.yaml --duration 10
-python -m cowic.sim --config configs/exp4_cowic_full.yaml --duration 10
-python scripts/run_benchmark_sweep.py --quick
-python -m cowic.analysis --results-csv results/benchmark_results.csv --output-dir figures
-pytest
-```
-
-Suggested order:
-
-1. Run Exp 1, then Exp 4 with the same duration. Compare `zigbee_gain_ratio` and `wifi_drop_rate`.
-2. Open `figures/fig11_Traffic_I_tzb1000.png` and walk through the six panels (G_z, PDR_w, U_eff, jitter, moved FGs, maximum delay).
-3. Open `fig15_occupancy_tzb1000_dfree63.png` and explain the effect of load.
-4. Open `fig16_sensing_Traffic_I_tzb1000.png` and explain the cost of the sensing window.
-5. Run `pytest` and show the test count and the coverage.
-
 ## References
 
 [1] T. Cheng, S. Li, Y. Pan, "CoWiC-MAC: A coordinated WiFi-centric MAC mechanism in heterogeneous wireless networks", *Computer Networks* 287 (2026) 112479.
