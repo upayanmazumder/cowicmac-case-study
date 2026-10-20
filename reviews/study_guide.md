@@ -30,11 +30,13 @@ For each concept: say what it is, then say where it appears in our project.
 
 ## 3. One cycle, step by step
 
-1. The AP broadcasts WBeacon 1 with the beacon interval and the position of the sensing window. The ZC listens by default and reads it.
+The paper begins with WBeacon 1. The software model starts with ZigBee demand and sends one WBeacon grant. It does not transmit WBeacon 1 separately.
+
+1. In the paper, the AP broadcasts WBeacon 1 with the beacon interval and sensing-window position. The software model omits this broadcast.
 2. The ZC sends a ZBeacon in the sensing window. It carries the airtime demand D_free.
 3. The AP collects the FGs of the cycle and solves the MILP.
 4. The MILP gives a new start time for each FG, a flag for each FG that waits for the next cycle, and the positions of the free window and the sensing window.
-5. The AP sends WBeacon 2 with the window positions.
+5. The AP sends a WBeacon grant with the window positions. This represents the paper's WBeacon 2.
 6. The ZC runs L-WSA. It picks slot length, CAP slots, CFP slots and beacon offset. It avoids the WiFi fragments that stay inside the window.
 7. Both sides transmit. The medium marks any pair of overlapping transmissions as failed.
 8. The metrics module reads the records and computes G_z, PDR_w, U_eff, jitter, moved FGs and maximum delay.

@@ -210,15 +210,6 @@ The WiFi drop rate of Exp 4 is not zero at any D_free on Traffic I, so the claim
 - Synthetic traces replace the paper's real traces.
 - The MILP solver has a 10 s limit per cycle. In the reference run 432 of the cycles stopped at this limit, so some values depend on the machine.
 
-## 9. How to run it
-
-```
-pip install -e ".[dev]"
-python -m cowic.sim --config configs/exp4_cowic_full.yaml --duration 10
-python scripts/run_benchmark_sweep.py --quick
-pytest
-```
-
 ## References
 
 [1] T. Cheng, S. Li, Y. Pan, "CoWiC-MAC: A coordinated WiFi-centric MAC mechanism in heterogeneous wireless networks", *Computer Networks* 287 (2026) 112479. doi:10.1016/j.comnet.2026.112479.

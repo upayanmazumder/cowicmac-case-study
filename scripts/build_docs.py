@@ -39,6 +39,18 @@ DOCUMENTS: tuple[tuple[str, str], ...] = (
         "reviews/review 3/CoWiC-MAC_Case_Study.pdf",
     ),
     ("reviews/study_guide.md", "reviews/CoWiC-MAC_Study_Guide.pdf"),
+    (
+        "reviews/study_guide_upayan.md",
+        "reviews/CoWiC-MAC_Study_Guide_Upayan.pdf",
+    ),
+    (
+        "reviews/study_guide_nitesh.md",
+        "reviews/CoWiC-MAC_Study_Guide_Nitesh.pdf",
+    ),
+    (
+        "reviews/study_guide_divyansh.md",
+        "reviews/CoWiC-MAC_Study_Guide_Divyansh.pdf",
+    ),
 )
 
 DEFAULT_CHROME = next(

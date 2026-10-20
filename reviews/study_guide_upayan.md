@@ -2,7 +2,7 @@
 
 **Presenter focus:** Central architecture  
 **Registration:** 24BDS0367  
-**Use this guide to prepare your presentation section.** Write style: ASD-STE100.
+Use this guide to prepare your presentation section.
 
 ---
 
@@ -22,9 +22,9 @@ Nitesh covers WiFi internals. Divyansh covers ZigBee internals. Your job is to j
 
 ## 2. Quick Brief: Nitesh's WiFi Work
 
-A Frame Group (FG) is a WiFi transmission batch with arrival time, duration, and deadline. The AP Orchestrator cycles through `MAINTAINING → CTC_GATHERING → RESCHEDULING → CTC_NOTIFYING → TRANSMITTING`.
+A Frame Group (FG) is a WiFi batch with an arrival time, duration, and deadline. The AP cycles through `MAINTAINING → CTC_GATHERING → RESCHEDULING → CTC_NOTIFYING → TRANSMITTING`.
 
-In `RESCHEDULING`, the MILP solver (Equations 11–17) moves FGs to create a free window and a protected sensing window. If the MILP fails, whitespace expansion fallback runs.
+In `RESCHEDULING`, the MILP tries to place a free window and a protected sensing window. It may leave WiFi fragments in the free window. The solver has a 10-second cycle limit. The AP uses whitespace expansion when the solver has no usable result.
 
 Baselines:
 
@@ -32,7 +32,7 @@ Baselines:
 - Exp 2: opportunistic idle-gap sensing
 - Exp 3: ECC / NAV reservation with a fixed ZigBee superframe
 
-If asked for MILP details, hand off to Nitesh after one sentence on the objective (minimise free-window overlap cost, sensing overlap, delay, and postponement).
+If asked for MILP details, ask Nitesh to explain overlap, absolute movement, postponement, and deadline costs.
 
 ---
 
@@ -50,7 +50,9 @@ If asked for L-WSA search details, hand off to Divyansh.
 
 ## 4. Deep Dive: Central Architecture
 
-### 4.1 One full coordination cycle
+### 4.1 Paper handshake and simulated cycle
+
+The paper starts with WBeacon 1. Our simulation models ZBeacon demand and a WBeacon grant. It does not transmit a separate WBeacon 1.
 
 ```mermaid
 sequenceDiagram
@@ -61,11 +63,13 @@ sequenceDiagram
   participant LWSA as L-WSA
   participant CH as Channel Medium
 
+  AP->>CTC: WBeacon 1 (beacon interval and sensing position)
+  CTC->>ZC: discovery
   ZC->>CTC: ZBeacon (d_free_ms)
   CTC->>AP: deliver demand
-  AP->>MILP: solve schedule
-  MILP-->>AP: free + sensing windows
-  AP->>CTC: WBeacon (window bounds)
+  AP->>MILP: seek a feasible schedule
+  MILP-->>AP: windows and FG decisions (or fallback)
+  AP->>CTC: WBeacon 2 (window bounds)
   CTC->>ZC: deliver grant
   ZC->>LWSA: adapt superframe
   LWSA-->>ZC: SuperframeConfig
@@ -74,24 +78,24 @@ sequenceDiagram
   Note over CH: Records are read by the metrics module after the run
 ```
 
-Cycle steps in words:
+Paper steps in words (the first broadcast is not an event in our model):
 
-1. ZC computes demand and sends ZBeacon.
-2. AP gathers CTC demand.
-3. AP solves MILP (or fallback) and places free / sensing windows.
-4. AP sends WBeacon.
-5. ZC parses the grant and runs L-WSA.
-6. Both sides transmit into `ChannelMedium`.
-7. Metrics are computed from channel records.
+1. The AP broadcasts WBeacon 1. The ZC learns when the AP senses for demand.
+2. The ZC sends a ZBeacon with its demand in the sensing window.
+3. The AP solves the WiFi schedule or uses the fallback.
+4. The AP sends WBeacon 2 with the free-window and sensing-window bounds.
+5. The ZC runs L-WSA and avoids WiFi fragments in the free window.
+6. Both sides transmit into `ChannelMedium`. Overlapping bursts fail.
+7. The metrics module reads the channel records after the run.
 
 ### 4.2 CTC channel model
 
 Module: `src/cowic/ctc/channel.py`
 
-| Message | Direction | Payload                                                                  |
-| ------- | --------- | ------------------------------------------------------------------------ |
-| ZBeacon | ZC → AP   | `d_free_ms`                                                              |
-| WBeacon | AP → ZC   | `t_free_start_ms`, `t_free_end_ms`, `t_sense_start_ms`, `t_sense_end_ms` |
+| Message | Direction | Payload |
+| ------- | --------- | ------- |
+| ZBeacon | ZC → AP | `d_free_ms` |
+| WBeacon | AP → ZC | `t_free_start_ms`, `t_free_end_ms`, `t_sense_start_ms`, `t_sense_end_ms` |
 
 Notes:
 
@@ -110,7 +114,7 @@ Role:
 - Call orchestrator / coordinator methods at the right simulated times
 - Collect channel records and pass them to metrics
 
-The engine does not invent MAC behaviour. It wires existing modules and advances simulated time.
+The engine also synthesizes ZigBee attempts and WiFi airtime from the schedule. It handles carryover across cycles and applies the CTC result.
 
 ### 4.4 Shared channel medium
 
@@ -135,17 +139,15 @@ Collision rule in this project: temporal overlap on the shared channel causes mu
 
 Module: `src/cowic/analysis/metrics.py`
 
-| Metric           | Meaning                                                     |
-| ---------------- | ----------------------------------------------------------- |
-| $G_z$            | ZigBee gain = delivered / clean-spectrum capacity           |
-| $PDR_w$          | WiFi drop rate = discarded FG duration / requested duration |
-| $U_{\text{eff}}$ | Successful useful airtime / simulated duration              |
-| Jitter           | Spread of WiFi FG delays                                    |
-| Max delay        | Worst WiFi FG delay                                         |
+| Metric | Meaning |
+| ------ | ------- |
+| $G_z$ | Delivered ZigBee payload / ideal clean-spectrum payload over the same demand. |
+| $PDR_w$ | Lost WiFi FG airtime / requested FG airtime. Loss includes deadline drops and collisions. |
+| $U_{\text{eff}}$ | Successful useful airtime / simulated duration. |
+| Jitter | Variation in WiFi FG delay. |
+| Max delay | Longest WiFi FG delay. |
 
-Acceptance point used in the benchmark runner: Exp 4, $D_{\text{free}}=31$ ms, $T_{ZB}=1000$ ms → require $G_z > 0.9$ and $PDR_w = 0$.
-
-Observed quick-sweep point: $G_z = 0.929$, $PDR_w = 0.0$ (PASS).
+The 60-second Traffic I run gives Exp 4 $G_z$ of 0.94, 0.87, and 0.63 at $D_{\text{free}}$ of 31, 62, and 123 ms. Its $PDR_w$ is 1.3 %, 2.7 %, and 4.0 %. Do not claim zero WiFi loss on this trace.
 
 ### 4.7 Full architecture diagram
 
@@ -169,7 +171,7 @@ flowchart TB
 ## 5. Likely Questions and Answers
 
 **Q1. Why software-only?**  
-A. The base paper evaluates MAC-level scheduling and collision logic. SimPy + PuLP gives that fidelity without ns-3 compile cost.
+A. The paper evaluates a MAC protocol in simulation. Our SimPy model studies timing and collisions, not waveforms or radio hardware.
 
 **Q2. What does CTC carry in this project?**  
 A. Control scalars only. ZBeacon carries demand. WBeacon carries free and sensing window bounds.
@@ -181,7 +183,7 @@ A. `ChannelMedium` compares time intervals. Overlap beyond tolerance marks both 
 A. The AP places it. The MILP hard constraint forces zero WiFi overlap with the sensing window.
 
 **Q5. What happens if MILP fails?**  
-A. The AP uses whitespace expansion fallback. It still tries to grant a usable free window without introducing avoidable postponements.
+A. The AP uses whitespace expansion. The fallback can still lose FGs or grant less ZigBee airtime under heavy load.
 
 **Q6. How does the engine keep WiFi and ZigBee aligned?**  
 A. Both processes run in one SimPy environment. CTC messages and cycle boundaries synchronise them.
@@ -190,10 +192,10 @@ A. Both processes run in one SimPy environment. CTC messages and cycle boundarie
 A. Some WiFi FGs cannot move. They leave fragments inside the free window. L-WSA must place ZigBee slots around them.
 
 **Q8. How is $G_z$ computed?**  
-A. Delivered ZigBee payload divided by the theoretical capacity in a clean spectrum over the same interval.
+A. Divide delivered ZigBee payload by the ideal payload for the same demand under clean-spectrum conditions.
 
 **Q9. How do Exp 5 and Exp 6 help?**  
-A. They are ablations. Exp 5 uses hard WiFi vacate with fixed ZigBee. Exp 6 removes sensing overhead. Together they show which parts of CoWiC matter.
+A. They are ablations. Exp 5 clears the window rigidly and uses fixed ZigBee slots. Exp 6 omits sensing overhead. Exp 5 reaches full ZigBee gain but loses up to 8.1 % of WiFi airtime on Traffic I.
 
 **Q10. What should the audience remember from your section?**  
-A. CoWiC-MAC is a closed loop: demand report → WiFi reschedule → grant → ZigBee adapt → shared-medium evaluation.
+A. The AP and ZC coordinate in one cycle. The model still loses WiFi airtime on high-load traces. The paper's absolute results do not all reproduce.

@@ -21,11 +21,11 @@
 
 Ownership matches Review 2.
 
-| Guide                                       | Presenter       | Domain               |
-| ------------------------------------------- | --------------- | -------------------- |
-| [Upayan's guide](study_guide_upayan.md)     | Upayan Mazumder | Central architecture |
-| [Nitesh's guide](study_guide_nitesh.md)     | Nitesh Pandey   | WiFi side            |
-| [Divyansh's guide](study_guide_divyansh.md) | Divyansh Saxena | ZigBee side          |
+| Guide | Presenter | Domain | PDF |
+| ----- | --------- | ------ | --- |
+| [Upayan's guide](study_guide_upayan.md) | Upayan Mazumder | Central architecture | [Download](CoWiC-MAC_Study_Guide_Upayan.pdf) |
+| [Nitesh's guide](study_guide_nitesh.md) | Nitesh Pandey | WiFi side | [Download](CoWiC-MAC_Study_Guide_Nitesh.pdf) |
+| [Divyansh's guide](study_guide_divyansh.md) | Divyansh Saxena | ZigBee side | [Download](CoWiC-MAC_Study_Guide_Divyansh.pdf) |
 
 ## Source Papers
 
